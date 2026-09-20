@@ -24,8 +24,9 @@ from thaicite.adapters.crossref import CrossrefAdapter
 from thaicite.adapters.openalex import OpenAlexAdapter
 from thaicite.adapters.pubmed import PubMedAdapter
 from thaicite.adapters.thaijo import ThaiJOAdapter
+from thaicite.core import coverage as cov
 from thaicite.core.engine import discover_citations
-from thaicite.core.models import Citation
+from thaicite.core.models import Citation, DiscoveredCandidate
 from thaicite.routing.router import route
 
 
@@ -57,26 +58,36 @@ def _format_citation(citation: Citation, index: int) -> str:
     return f"{index}. {authors} ({year}). {primary.title}. {ident}{thai_tag}"
 
 
+def _format_candidate(candidate: DiscoveredCandidate, index: int) -> str:
+    """Same shape as `_format_citation()` for a `DiscoveredCandidate` --
+    note there is no admissibility verdict to print here (that type has no
+    `decision` field); `verify_cite`/`thaicite`'s identity path is where
+    that question is answered, for a specific claim.
+    """
+    work = candidate.work
+    primary = work.primary
+    authors = ", ".join(primary.authors) if primary.authors else "(no author listed)"
+    year = primary.year if primary.year is not None else "n.d."
+    ident_bits = []
+    if primary.doi:
+        ident_bits.append(f"doi:{primary.doi}")
+    if primary.pmid:
+        ident_bits.append(f"pmid:{primary.pmid}")
+    if not ident_bits:
+        ident_bits.append(f"{primary.source_adapter}:{primary.source_record_id}")
+    ident = " ".join(ident_bits)
+    thai_tag = f" [{'/'.join(candidate.thai_relevance)}]" if candidate.thai_relevance else ""
+    return f"{index}. {authors} ({year}). {primary.title}. {ident}{thai_tag}"
+
+
 def _print_debug_detail(result: dict[str, Any]) -> None:
     rejected = result.get("rejected") or {}
-    held = result.get("held") or {}
     not_found = result.get("not_found_queries") or {}
-    cite_uses = result.get("cite_uses") or []
 
-    print("\n--- debug: rejected ---")
+    print("\n--- debug: rejected (existence/identity/relevance gate failures) ---")
     if not rejected:
         print("(none)")
     for label, detail in rejected.items():
-        print(f"- {label}: {detail.get('reason')} (state={detail.get('state')})")
-        if detail.get("title"):
-            print(f"    title: {detail['title']}")
-        if detail.get("query"):
-            print(f"    query: {detail['query']}")
-
-    print("\n--- debug: held (identity confirmed, not admitted) ---")
-    if not held:
-        print("(none)")
-    for label, detail in held.items():
         print(f"- {label}: {detail.get('reason')} (state={detail.get('state')})")
         if detail.get("title"):
             print(f"    title: {detail['title']}")
@@ -90,17 +101,8 @@ def _print_debug_detail(result: dict[str, Any]) -> None:
         print(f"- {query!r}: {detail.get('note')}")
         for adapter_name, info in (detail.get("by_adapter") or {}).items():
             print(f"    {adapter_name}: {info.get('state')} -- {info.get('message')}")
-
-    print("\n--- debug: HOLD cite-uses ---")
-    holds = [cu for cu in cite_uses if cu.decision == "HOLD"]
-    if not holds:
-        print("(none)")
-    for cu in holds:
-        print(
-            f"- {cu.work.primary.title!r} vs claim {cu.claim!r}: "
-            f"relation={cu.relation} evidence={cu.evidence_level} "
-            f"decision_debug={cu.decision_debug}"
-        )
+            if info.get("coverage"):
+                print(f"      coverage: {info['coverage']}")
 
 
 def find_citations(context: str, max_results: int, debug: bool = False) -> int:
@@ -124,8 +126,9 @@ def find_citations(context: str, max_results: int, debug: bool = False) -> int:
         adapters=route_decision.adapters,
     )
     route_decision.update_track_status(result)
+    route_decision.update_coverage(result)
 
-    verified: list[Citation] = result["verified"][:max_results]
+    candidates: list[DiscoveredCandidate] = result["candidates"][:max_results]
 
     print(f"domain: {route_decision.domain}")
     print(f"track_status: {route_decision.track_status}")
@@ -133,12 +136,26 @@ def find_citations(context: str, max_results: int, debug: bool = False) -> int:
         print(f"query_family: {result.get('query_family')}")
     print()
 
-    if not verified:
-        print("No verified citations found for this context.")
+    if not candidates:
+        # Coverage Readout (founder-approved redesign, 2026-09-20): "not
+        # found" must NEVER print alone -- it always prints together with
+        # which sources were actually searchable, so an empty result never
+        # silently reads as a universal negative. See core/coverage.py.
+        print("No candidate works found for this context.")
+        print()
+        print("Coverage -- ไม่พบงาน (nothing found), ภายใต้แหล่งที่ค้นได้เหล่านี้ (given these searchable sources):")
+        for line in cov.format_coverage_lines(route_decision.coverage):
+            print(line)
+        if cov.coverage_is_all_negative(route_decision.coverage):
+            print(
+                "  ** WARNING: every listed source was UNAVAILABLE/NOT_ATTEMPTED/"
+                "NOT_CONNECTED -- this 'not found' reflects a coverage failure, "
+                "not a confirmed absence. **"
+            )
     else:
-        print(f"Found {len(verified)} citation(s):\n")
-        for i, citation in enumerate(verified, start=1):
-            print(_format_citation(citation, i))
+        print(f"Found {len(candidates)} candidate(s):\n")
+        for i, candidate in enumerate(candidates, start=1):
+            print(_format_candidate(candidate, i))
 
     if debug:
         _print_debug_detail(result)

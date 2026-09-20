@@ -65,6 +65,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from thaicite.adapters.base import SourceAdapter
+from thaicite.core import coverage as cov
 from thaicite.core.models import VerificationState
 from thaicite.normalize.thai_relevance import (
     ABOUT_THAILAND,
@@ -223,6 +224,17 @@ class RouteDecision:
     adapters: list[SourceAdapter] = field(default_factory=list)
     adapter_names: list[str] = field(default_factory=list)
     track_status: dict[str, str] = field(default_factory=dict)
+    # Coverage Readout (core/coverage.py, founder-approved redesign
+    # 2026-09-20): one CoverageEntry per adapter this router knows about
+    # (routed-and-available, domain-excluded, caller-didn't-configure, or
+    # known-but-out-of-v1-scope), refined into per-sub-endpoint entries for
+    # any adapter that exposes `.coverage_entries()` (ThaiJO). This is the
+    # sibling to `track_status` the redesign asked for: `track_status` is a
+    # coarse 2-track (global/local) health signal; `coverage` is the full,
+    # granular "which sources did we actually get to look at" readout meant
+    # to be shown prominently whenever a result set comes back empty (see
+    # `cli.py`/`mcp_server.py`).
+    coverage: list[cov.CoverageEntry] = field(default_factory=list)
     # Debug/transparency only -- never re-consumed as a gate, same
     # discipline as Candidate.thai_relevance (normalize/thai_relevance.py).
     signals: dict[str, Any] = field(default_factory=dict)
@@ -246,10 +258,15 @@ class RouteDecision:
             (core/engine.py's `resolve_citations`), but any real error
             state appearing there for an adapter is still real evidence
             that adapter is unhealthy.
-          - `verified` / other `rejected` entries -- each references a
-            `CanonicalWork` whose candidates carry `source_adapter`; an
-            adapter that contributed at least one candidate anywhere is
-            evidence that adapter is currently reachable.
+          - `verified` (`resolve_citations()`'s `Citation` list) /
+            `candidates` (`discover_citations()`'s `DiscoveredCandidate`
+            list, 2026-09-20) / other `rejected` entries -- each
+            references a `CanonicalWork` whose candidates carry
+            `source_adapter`; an adapter that contributed at least one
+            candidate anywhere is evidence that adapter is currently
+            reachable. Reading both keys keeps this method usable
+            against either entry point's result without needing to know
+            which one produced it.
         """
         errored_adapters: set[str] = set()
         healthy_adapters: set[str] = set()
@@ -265,11 +282,12 @@ class RouteDecision:
                     if state in VerificationState.ERROR_STATES:
                         errored_adapters.add(adapter_name)
 
-        for citation in engine_result.get("verified") or []:
-            for candidate in getattr(citation.work, "candidates", []):
-                name = getattr(candidate, "source_adapter", None)
-                if name:
-                    healthy_adapters.add(name)
+        for bucket_key in ("verified", "candidates"):
+            for item in engine_result.get(bucket_key) or []:
+                for candidate in getattr(item.work, "candidates", []):
+                    name = getattr(candidate, "source_adapter", None)
+                    if name:
+                        healthy_adapters.add(name)
 
         rejected = engine_result.get("rejected") or {}
         for key, entry in rejected.items():
@@ -299,6 +317,80 @@ class RouteDecision:
             # (the a-priori STATUS_OK from route()) rather than guessing.
 
         return self.track_status
+
+    def update_coverage(self, engine_result: dict[str, Any]) -> list["cov.CoverageEntry"]:
+        """Refine `self.coverage`'s a-priori entries with real per-adapter
+        evidence from `engine_result` (same evidence sources as
+        `update_track_status()` above), AFTER `resolve_citations()`/
+        `discover_citations()` has actually run.
+
+        An adapter-level entry (status `OK` a priori, meaning "will be
+        attempted") becomes `UNAVAILABLE` the moment a real transport error
+        (`VerificationState.ERROR_STATES`) is seen for it anywhere in
+        `engine_result`, with `reason` taken from that error's message --
+        mirroring `update_track_status()`'s "one bad adapter must never look
+        identical to a healthy one" rule, but at the coverage-row level
+        instead of the coarse global/local track level. Entries that were
+        already `NOT_ATTEMPTED`/`NOT_CONNECTED` (domain-excluded, not
+        configured, known-unconfigured-source) are left untouched -- no
+        amount of evidence about OTHER adapters changes what this router
+        itself decided not to route.
+        """
+        errored_adapters: dict[str, str] = {}
+        healthy_adapters: set[str] = set()
+
+        for bucket_key in ("rejected", "not_found_queries"):
+            bucket = engine_result.get(bucket_key) or {}
+            for entry in bucket.values():
+                if not isinstance(entry, dict):
+                    continue
+                by_adapter = entry.get("by_adapter") or {}
+                for adapter_name, info in by_adapter.items():
+                    if not isinstance(info, dict):
+                        continue
+                    state = info.get("state")
+                    if state in VerificationState.ERROR_STATES:
+                        errored_adapters[adapter_name] = (
+                            f"{state}: {info.get('message', '')}".strip(": ")
+                        )
+
+        for bucket_key in ("verified", "candidates"):
+            for item in engine_result.get(bucket_key) or []:
+                for candidate in getattr(item.work, "candidates", []):
+                    name = getattr(candidate, "source_adapter", None)
+                    if name:
+                        healthy_adapters.add(name)
+
+        rejected = engine_result.get("rejected") or {}
+        for key, entry in rejected.items():
+            if not isinstance(entry, dict) or entry.get("reason") == "adapter_error":
+                continue
+            adapter_name = key.split(":", 1)[0]
+            if adapter_name:
+                healthy_adapters.add(adapter_name)
+
+        refined: list[cov.CoverageEntry] = []
+        for entry in self.coverage:
+            adapter_name = entry.source.split(":", 1)[0]
+            if entry.status not in (cov.OK,) or adapter_name not in (
+                errored_adapters.keys() | healthy_adapters
+            ):
+                refined.append(entry)
+                continue
+            if adapter_name in errored_adapters:
+                refined.append(
+                    cov.CoverageEntry(
+                        source=entry.source,
+                        status=cov.UNAVAILABLE,
+                        reason=errored_adapters[adapter_name],
+                        detail=entry.detail,
+                    )
+                )
+            else:  # confirmed healthy -- stays OK, now with real evidence
+                refined.append(entry)
+
+        self.coverage = refined
+        return self.coverage
 
 
 # ------------------------------------------------------------------ route --
@@ -346,10 +438,87 @@ def route(
         ],
     }
 
+    coverage = _build_coverage(domain, ordered_names, wanted_order, by_name)
+
     return RouteDecision(
         domain=domain,
         adapters=ordered_adapters,
         adapter_names=ordered_names,
         track_status=track_status,
+        coverage=coverage,
         signals=signals,
     )
+
+
+# All adapter names this project's domain policy ever routes to, across
+# every domain (ARCHITECTURE.md SS56's 4 core v1 adapters) -- used to tell
+# "this domain deliberately excluded that adapter" (NOT_ATTEMPTED) apart
+# from "that adapter was never a routing candidate for any domain".
+_ALL_CORE_ADAPTER_NAMES = frozenset(
+    name for order in _DOMAIN_ADAPTER_ORDER.values() for name in order
+)
+
+
+def _build_coverage(
+    domain: str,
+    ordered_names: list[str],
+    wanted_order: tuple[str, ...],
+    by_name: dict[str, SourceAdapter],
+) -> list["cov.CoverageEntry"]:
+    """Build the a-priori Coverage Readout (`core/coverage.py`) for one
+    `route()` call -- refined later by `RouteDecision.update_coverage()`
+    once the actual search has run. See that method's docstring for the
+    refinement rule.
+    """
+    entries: list[cov.CoverageEntry] = []
+
+    for name in wanted_order:
+        adapter = by_name.get(name)
+        if adapter is None:
+            entries.append(
+                cov.CoverageEntry(
+                    source=name,
+                    status=cov.NOT_CONNECTED,
+                    reason="this domain's routing policy wants this adapter, "
+                    "but the caller did not configure/pass it in",
+                )
+            )
+            continue
+        entries.append(
+            cov.CoverageEntry(
+                source=name,
+                status=cov.OK,
+                reason="routed in for this domain -- will be attempted "
+                "(a-priori; see RouteDecision.update_coverage())",
+            )
+        )
+        coverage_entries = getattr(adapter, "coverage_entries", None)
+        if callable(coverage_entries):
+            # Sub-endpoint granularity (ThaiJO's per-category OAI-PMH
+            # endpoints) -- see `adapters/thaijo.py::ThaiJOAdapter
+            # .coverage_entries()`. Appended alongside, never replacing, the
+            # adapter-level row above: a caller that only cares about
+            # "THAIJO overall" still gets that row.
+            entries.extend(coverage_entries())
+
+    for name in _ALL_CORE_ADAPTER_NAMES - set(wanted_order):
+        entries.append(
+            cov.CoverageEntry(
+                source=name,
+                status=cov.NOT_ATTEMPTED,
+                reason=f"domain {domain!r}'s routing policy does not include "
+                "this adapter for this (context, query)",
+            )
+        )
+
+    for name in cov.KNOWN_UNCONFIGURED_SOURCES:
+        entries.append(
+            cov.CoverageEntry(
+                source=name,
+                status=cov.NOT_CONNECTED,
+                reason="out of this project's v1 scope -- no adapter exists "
+                "for this source yet (ARCHITECTURE.md SS56)",
+            )
+        )
+
+    return entries

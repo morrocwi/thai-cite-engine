@@ -21,12 +21,17 @@ techniques are used, matching what each function actually needs:
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
+import pytest
 import requests
 
 from thaicite.adapters.base import AdapterError, RawRecord
 from thaicite.adapters.crossref import CrossrefAdapter
 from thaicite.adapters.pubmed import PubMedAdapter
 from thaicite.adapters.thaijo import ThaiJOAdapter
+from thaicite.adapters.thaijo_index import ThaiIndex
 from thaicite.core.models import VerificationState
 
 
@@ -164,59 +169,53 @@ def test_crossref_search_real_success_shape_returns_raw_records(monkeypatch):
 
 
 # =============================================================================
-# ThaiJO (OAI-PMH)
+# ThaiJO -- Harvester + Local Index + thin adapter (round 3 redesign, 2026-09-20)
 # =============================================================================
+#
+# `ThaiJOAdapter.search()` no longer touches the network at all -- it queries
+# a local `ThaiIndex` (SQLite+FTS5) snapshot. So these tests split cleanly:
+#   - `ThaiJOAdapter` tests here use a real temp-file-backed `ThaiIndex`
+#     (pre-populated directly via `upsert_record`) -- no HTTP, no XML.
+#   - `ThaiJOHarvester`/`ThaiIndex` HTTP+XML+pagination/endpoint-independence
+#     tests live in `tests/test_thaijo_harvester.py` and
+#     `tests/test_thaijo_index.py`.
 
-_NO_RECORDS_MATCH_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
-<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
-  <error code="noRecordsMatch">No matching records</error>
-</OAI-PMH>
-"""
 
-_PROTOCOL_ERROR_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
-<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
-  <error code="badVerb">Illegal OAI verb</error>
-</OAI-PMH>
-"""
+@pytest.fixture()
+def temp_index():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        idx = ThaiIndex(Path(tmpdir) / "thaijo_index.db")
+        yield idx
+        idx.close()
 
-_LIST_RECORDS_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
-<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
-  <ListRecords>
-    <record>
-      <header>
-        <identifier>oai:tci-thaijo.org:article/1001</identifier>
-      </header>
-      <metadata>
-        <oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"
-                    xmlns:dc="http://purl.org/dc/elements/1.1/">
-          <dc:title>Communication problems between medical staff and patients</dc:title>
-          <dc:creator>Somchai Jaidee</dc:creator>
-          <dc:date>2020-05-01</dc:date>
-          <dc:identifier>https://doi.org/10.5555/thai-study</dc:identifier>
-          <dc:description>A study of hospital communication in Thailand.</dc:description>
-        </oai_dc:dc>
-      </metadata>
-    </record>
-  </ListRecords>
-</OAI-PMH>
-"""
+
+def _thaijo_raw_metadata(
+    *,
+    identifier="oai:tci-thaijo.org:article/1001",
+    title="Communication problems between medical staff and patients",
+    creators=("Somchai Jaidee",),
+    dates=("2020-05-01",),
+    identifiers=("https://doi.org/10.5555/thai-study",),
+    descriptions=("A study of hospital communication in Thailand.",),
+):
+    return {
+        "identifier": identifier,
+        "titles": [title],
+        "creators": list(creators),
+        "dates": list(dates),
+        "identifiers": list(identifiers),
+        "descriptions": list(descriptions),
+        "source": [],
+    }
 
 
 def test_thaijo_to_candidates_pure_function_real_field_shape():
-    # This is the exact raw_metadata shape ThaiJOAdapter.search() itself
-    # builds from a parsed OAI-PMH <record> -- reproduced by hand here so
-    # to_candidates() is exercised without going through search()/HTTP/XML.
-    raw_metadata = {
-        "identifier": "oai:tci-thaijo.org:article/1001",
-        "titles": ["Communication problems between medical staff and patients"],
-        "creators": ["Somchai Jaidee"],
-        "dates": ["2020-05-01"],
-        "identifiers": ["https://doi.org/10.5555/thai-study"],
-        "descriptions": ["A study of hospital communication in Thailand."],
-        "source": [],
-    }
+    # This is the exact raw_metadata shape ThaiIndex.search() reconstructs
+    # from a harvested record -- reproduced by hand here so to_candidates()
+    # is exercised without going through search()/ThaiIndex at all.
+    raw_metadata = _thaijo_raw_metadata()
     record = RawRecord(source_record_id=raw_metadata["identifier"], raw_metadata=raw_metadata)
-    candidates = ThaiJOAdapter().to_candidates([record])
+    candidates = ThaiJOAdapter(index=ThaiIndex(":memory:")).to_candidates([record])
     assert len(candidates) == 1
     c = candidates[0]
     assert c.source_adapter == "THAIJO"
@@ -228,268 +227,94 @@ def test_thaijo_to_candidates_pure_function_real_field_shape():
 
 
 def test_thaijo_to_candidates_url_identifier_without_doi():
-    raw_metadata = {
-        "identifier": "oai:tci-thaijo.org:article/2002",
-        "titles": ["Some other article"],
-        "creators": [],
-        "dates": [],
-        "identifiers": ["https://tci-thaijo.org/index.php/journal/article/view/2002"],
-        "descriptions": [],
-        "source": [],
-    }
+    raw_metadata = _thaijo_raw_metadata(
+        identifier="oai:tci-thaijo.org:article/2002",
+        title="Some other article",
+        creators=(),
+        dates=(),
+        identifiers=("https://tci-thaijo.org/index.php/journal/article/view/2002",),
+        descriptions=(),
+    )
     record = RawRecord(source_record_id=raw_metadata["identifier"], raw_metadata=raw_metadata)
-    candidates = ThaiJOAdapter().to_candidates([record])
+    candidates = ThaiJOAdapter(index=ThaiIndex(":memory:")).to_candidates([record])
     c = candidates[0]
     assert c.doi is None
     assert c.url == "https://tci-thaijo.org/index.php/journal/article/view/2002"
 
 
-def test_thaijo_search_maps_no_records_match_to_not_found(monkeypatch):
-    # Every endpoint in the default fan-out returns the same canned
-    # noRecordsMatch response here; min_request_interval_s=0 keeps the
-    # (now many-endpoint) offline test fast -- no real sleeping.
-    monkeypatch.setattr(
-        "thaicite.adapters.thaijo.requests.get",
-        lambda *a, **k: _FakeResponse(status_code=200, content=_NO_RECORDS_MATCH_XML),
-    )
-    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
+def test_thaijo_search_on_never_synced_index_is_honest_not_a_source_notfound(temp_index):
+    adapter = ThaiJOAdapter(index=temp_index)
+    result = adapter.search("communication medical")
     assert isinstance(result, AdapterError)
     assert result.state == VerificationState.NOT_FOUND
+    # Must explicitly distinguish "local snapshot never synced" from a real
+    # source-level "no such record" -- never silently collapsed together.
+    assert "never been synced" in result.message
+    assert "not" in result.note.lower() and "source-level" in result.note.lower()
 
 
-def test_thaijo_search_maps_protocol_error_to_parser_error(monkeypatch):
-    monkeypatch.setattr(
-        "thaicite.adapters.thaijo.requests.get",
-        lambda *a, **k: _FakeResponse(status_code=200, content=_PROTOCOL_ERROR_XML),
+def test_thaijo_search_real_success_shape_filters_via_fts(temp_index):
+    raw_metadata = _thaijo_raw_metadata()
+    temp_index.upsert_record(
+        endpoint="https://sc01.tci-thaijo.org/index.php/index/oai",
+        native_id=raw_metadata["identifier"],
+        title=raw_metadata["titles"][0],
+        abstract=raw_metadata["descriptions"][0],
+        raw_metadata=raw_metadata,
     )
-    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
-    assert isinstance(result, AdapterError)
-    assert result.state == VerificationState.PARSER_ERROR
-
-
-def test_thaijo_search_maps_invalid_xml_to_parser_error(monkeypatch):
-    monkeypatch.setattr(
-        "thaicite.adapters.thaijo.requests.get",
-        lambda *a, **k: _FakeResponse(status_code=200, content=b"not xml at all <<<"),
-    )
-    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
-    assert isinstance(result, AdapterError)
-    assert result.state == VerificationState.PARSER_ERROR
-
-
-def test_thaijo_search_maps_429_to_rate_limited(monkeypatch):
-    monkeypatch.setattr(
-        "thaicite.adapters.thaijo.requests.get",
-        lambda *a, **k: _FakeResponse(status_code=429),
-    )
-    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
-    assert isinstance(result, AdapterError)
-    assert result.state == VerificationState.RATE_LIMITED
-
-
-def test_thaijo_search_real_success_shape_filters_on_query_terms(monkeypatch):
-    # Every endpoint returns the identical single-record page here; the
-    # adapter must de-duplicate by OAI identifier so the aggregate result
-    # still has exactly one Candidate-bound record, not one per endpoint.
-    monkeypatch.setattr(
-        "thaicite.adapters.thaijo.requests.get",
-        lambda *a, **k: _FakeResponse(status_code=200, content=_LIST_RECORDS_XML),
-    )
-    result = ThaiJOAdapter(min_request_interval_s=0).search("communication medical")
-    assert isinstance(result, list)
-    assert len(result) == 1
-    assert result[0].source_record_id == "oai:tci-thaijo.org:article/1001"
-
-
-def test_thaijo_search_real_success_shape_query_terms_not_matched_is_not_found(monkeypatch):
-    monkeypatch.setattr(
-        "thaicite.adapters.thaijo.requests.get",
-        lambda *a, **k: _FakeResponse(status_code=200, content=_LIST_RECORDS_XML),
-    )
-    result = ThaiJOAdapter(min_request_interval_s=0).search("completely unrelated botany survey")
-    assert isinstance(result, AdapterError)
-    assert result.state == VerificationState.NOT_FOUND
-
-
-# -----------------------------------------------------------------------
-# resumptionToken pagination (single endpoint, isolated via endpoint_bases)
-# -----------------------------------------------------------------------
-
-_PAGE_1_WITH_TOKEN_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
-<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
-  <ListRecords>
-    <record>
-      <header>
-        <identifier>oai:tci-thaijo.org:article/3001</identifier>
-      </header>
-      <metadata>
-        <oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"
-                    xmlns:dc="http://purl.org/dc/elements/1.1/">
-          <dc:title>Paged medical communication study, page one</dc:title>
-          <dc:creator>Somsri Somjai</dc:creator>
-          <dc:date>2021-01-01</dc:date>
-        </oai_dc:dc>
-      </metadata>
-    </record>
-    <resumptionToken>cursor-abc-001</resumptionToken>
-  </ListRecords>
-</OAI-PMH>
-"""
-
-_PAGE_2_FINAL_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
-<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
-  <ListRecords>
-    <record>
-      <header>
-        <identifier>oai:tci-thaijo.org:article/3002</identifier>
-      </header>
-      <metadata>
-        <oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"
-                    xmlns:dc="http://purl.org/dc/elements/1.1/">
-          <dc:title>Paged medical communication study, page two</dc:title>
-          <dc:creator>Somsri Somjai</dc:creator>
-          <dc:date>2021-01-01</dc:date>
-        </oai_dc:dc>
-      </metadata>
-    </record>
-    <resumptionToken></resumptionToken>
-  </ListRecords>
-</OAI-PMH>
-"""
-
-
-def test_thaijo_search_follows_resumption_token_across_pages(monkeypatch):
-    calls = []
-
-    def _fake_get(url, params=None, timeout=None):
-        calls.append(dict(params or {}))
-        if params and params.get("resumptionToken") == "cursor-abc-001":
-            return _FakeResponse(status_code=200, content=_PAGE_2_FINAL_XML)
-        return _FakeResponse(status_code=200, content=_PAGE_1_WITH_TOKEN_XML)
-
-    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
-
-    adapter = ThaiJOAdapter(
-        endpoint_bases=["https://example.invalid/index.php/index/oai"],
-        min_request_interval_s=0,
-    )
-    result = adapter.search("medical communication")
-
-    assert isinstance(result, list)
-    ids = {r.source_record_id for r in result}
-    assert ids == {
-        "oai:tci-thaijo.org:article/3001",
-        "oai:tci-thaijo.org:article/3002",
-    }
-    # First request has no resumptionToken; the follow-up carries the one
-    # returned by page one, per OAI-PMH 2.0 -- proving a real second
-    # request was issued, not just a single-page harvest.
-    assert "resumptionToken" not in calls[0]
-    assert calls[1]["resumptionToken"] == "cursor-abc-001"
-
-
-def test_thaijo_search_respects_max_records_to_scan_across_pages(monkeypatch):
-    monkeypatch.setattr(
-        "thaicite.adapters.thaijo.requests.get",
-        lambda *a, **k: _FakeResponse(status_code=200, content=_PAGE_1_WITH_TOKEN_XML),
-    )
-    adapter = ThaiJOAdapter(
-        endpoint_bases=["https://example.invalid/index.php/index/oai"],
-        min_request_interval_s=0,
-        max_records_to_scan=1,
-    )
-    result = adapter.search("medical communication")
-    # Budget of 1 is reached after page one's single record; the adapter
-    # must stop instead of following the resumptionToken forever.
-    assert isinstance(result, list)
-    assert len(result) == 1
-    assert result[0].source_record_id == "oai:tci-thaijo.org:article/3001"
-
-
-# -----------------------------------------------------------------------
-# multi-endpoint aggregation (independent per-endpoint error handling)
-# -----------------------------------------------------------------------
-
-
-def test_thaijo_search_aggregates_across_multiple_endpoints(monkeypatch):
-    def _fake_get(url, params=None, timeout=None):
-        if url == "https://example.invalid/index.php/li01/oai":
-            return _FakeResponse(status_code=200, content=_LIST_RECORDS_XML)
-        if url == "https://example.invalid/index.php/he01/oai":
-            return _FakeResponse(status_code=200, content=_PAGE_2_FINAL_XML)
-        raise AssertionError(f"unexpected endpoint in test: {url}")
-
-    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
-
-    adapter = ThaiJOAdapter(
-        endpoint_bases=[
-            "https://example.invalid/index.php/li01/oai",
-            "https://example.invalid/index.php/he01/oai",
-        ],
-        min_request_interval_s=0,
-    )
-    result = adapter.search("communication")
-    assert isinstance(result, list)
-    ids = {r.source_record_id for r in result}
-    # One record from each endpoint, aggregated together.
-    assert ids == {
-        "oai:tci-thaijo.org:article/1001",
-        "oai:tci-thaijo.org:article/3002",
-    }
-
-
-def test_thaijo_search_one_endpoint_404_does_not_block_the_others(monkeypatch):
-    def _fake_get(url, params=None, timeout=None):
-        if url == "https://example.invalid/index.php/index/oai":
-            return _FakeResponse(status_code=404, content=b"")
-        if url == "https://example.invalid/index.php/li01/oai":
-            return _FakeResponse(status_code=200, content=_LIST_RECORDS_XML)
-        raise AssertionError(f"unexpected endpoint in test: {url}")
-
-    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
-
-    adapter = ThaiJOAdapter(
-        endpoint_bases=[
-            "https://example.invalid/index.php/index/oai",
-            "https://example.invalid/index.php/li01/oai",
-        ],
-        min_request_interval_s=0,
-    )
+    adapter = ThaiJOAdapter(index=temp_index)
     result = adapter.search("communication medical")
     assert isinstance(result, list)
     assert len(result) == 1
     assert result[0].source_record_id == "oai:tci-thaijo.org:article/1001"
+    # Provenance carried through so a caller can see this is a snapshot
+    # readout, not a live guarantee.
+    assert "_endpoint" in result[0].raw_metadata
+    assert "_harvested_at" in result[0].raw_metadata
 
 
-def test_thaijo_search_all_endpoints_failing_reports_highest_priority_state(monkeypatch):
-    def _fake_get(url, params=None, timeout=None):
-        if url == "https://example.invalid/index.php/index/oai":
-            return _FakeResponse(status_code=404, content=b"")
-        if url == "https://example.invalid/index.php/li01/oai":
-            return _FakeResponse(status_code=429, content=b"")
-        raise AssertionError(f"unexpected endpoint in test: {url}")
-
-    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
-
-    adapter = ThaiJOAdapter(
-        endpoint_bases=[
-            "https://example.invalid/index.php/index/oai",
-            "https://example.invalid/index.php/li01/oai",
-        ],
-        min_request_interval_s=0,
+def test_thaijo_search_or_semantics_matches_on_any_query_term(temp_index):
+    # OR-semantics (not the old adapter's AND-over-raw-split-tokens): a
+    # query with one matching term and one non-matching term still hits.
+    raw_metadata = _thaijo_raw_metadata()
+    temp_index.upsert_record(
+        endpoint="https://sc01.tci-thaijo.org/index.php/index/oai",
+        native_id=raw_metadata["identifier"],
+        title=raw_metadata["titles"][0],
+        abstract=raw_metadata["descriptions"][0],
+        raw_metadata=raw_metadata,
     )
-    result = adapter.search("communication medical")
+    adapter = ThaiJOAdapter(index=temp_index)
+    result = adapter.search("communication nonexistentxyzterm")
+    assert isinstance(result, list)
+    assert len(result) == 1
+
+
+def test_thaijo_search_no_fts_match_is_not_found(temp_index):
+    raw_metadata = _thaijo_raw_metadata()
+    temp_index.upsert_record(
+        endpoint="https://sc01.tci-thaijo.org/index.php/index/oai",
+        native_id=raw_metadata["identifier"],
+        title=raw_metadata["titles"][0],
+        abstract=raw_metadata["descriptions"][0],
+        raw_metadata=raw_metadata,
+    )
+    adapter = ThaiJOAdapter(index=temp_index)
+    result = adapter.search("completely unrelated botany survey")
     assert isinstance(result, AdapterError)
-    # RATE_LIMITED outranks the plain PARSER_ERROR from the 404'd endpoint.
-    assert result.state == VerificationState.RATE_LIMITED
+    assert result.state == VerificationState.NOT_FOUND
 
 
-def test_thaijo_default_endpoint_bases_include_aggregator_and_category_guesses():
-    adapter = ThaiJOAdapter(min_request_interval_s=0)
-    assert adapter.endpoint_bases[0] == "https://www.tci-thaijo.org/index.php/index/oai"
-    assert "https://www.tci-thaijo.org/index.php/li01/oai" in adapter.endpoint_bases
-    assert "https://www.tci-thaijo.org/index.php/so20/oai" in adapter.endpoint_bases
-    assert "https://www.tci-thaijo.org/index.php/he05/oai" in adapter.endpoint_bases
+def test_thaijo_adapter_default_db_path_is_under_repo_not_hardcoded_elsewhere():
+    from thaicite.adapters.thaijo_index import DEFAULT_INDEX_DB_PATH
+
+    assert DEFAULT_INDEX_DB_PATH.is_absolute()
+    assert ".thaicite_cache" in DEFAULT_INDEX_DB_PATH.parts
+    # Must resolve under this repo checkout, never some fixed path outside
+    # the user's own control (e.g. never under /etc, /var, or a bare "/").
+    repo_root = Path(__file__).resolve().parents[1]
+    assert str(DEFAULT_INDEX_DB_PATH).startswith(str(repo_root))
+
 
 
 # =============================================================================

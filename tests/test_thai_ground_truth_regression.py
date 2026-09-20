@@ -38,6 +38,7 @@ from thaicite.core.models import (
     Candidate,
     CiteUse,
     Decision,
+    DiscoveredCandidate,
     EvidenceLevel,
     RelationLabel,
     VerificationState,
@@ -233,9 +234,12 @@ def test_discovery_mode_surfaces_wife_rights_and_mahr_as_candidates():
     (`find_cites`-style, via `core.engine.discover_citations`) with topic
     context "หางานวิจัยไทยเกี่ยวกับกฎหมายอิสลามและผู้หญิง" against a synthetic
     adapter seeded with the มะฮัร and สิทธิและหน้าที่ของภริยา titles surfaces
-    BOTH as evaluated candidates (present in `cite_uses`, decision never
-    silently REJECTed purely for the old G6-identity-vs-broad-context
-    mismatch -- `G6_discovery_relevance` passed for each)."""
+    BOTH as `DiscoveredCandidate`s (never silently REJECTed purely for the
+    old G6-identity-vs-broad-context mismatch -- `G6_discovery_relevance`
+    passed for each). 2026-09-20 round 3: discovery never reaches an
+    ADMIT/REJECT/HOLD decision at all -- there is no `cite_uses`/`verified`/
+    `held` here anymore, only `candidates` (no `decision` field, see
+    `core.models.DiscoveredCandidate`)."""
     wife_rights_raw = _thaijo_raw(
         "wife-rights-1",
         TITLE_WIFE_RIGHTS,
@@ -253,21 +257,17 @@ def test_discovery_mode_surfaces_wife_rights_and_mahr_as_candidates():
 
     result = discover_citations(context=DISCOVERY_CONTEXT, adapters=[adapter])
 
-    surfaced_ids = {cu.work.primary.source_record_id for cu in result["cite_uses"]}
+    assert result["rejected"] == {}
+    surfaced_ids = {c.work.primary.source_record_id for c in result["candidates"]}
     assert "wife-rights-1" in surfaced_ids
     assert "mahr-1" in surfaced_ids
 
-    for cu in result["cite_uses"]:
+    for candidate in result["candidates"]:
         # Never silently rejected purely on the old identity mismatch --
         # discovery relevance is the gate that actually ran, and it passed.
-        assert cu.gate_results["G6_discovery_relevance"] is True
-        # A real 3-way decision was reached, never a bare rejection with no
-        # decision at all.
-        assert cu.decision in Decision.ALL
-        # These candidates must not have been dropped as REJECT purely
-        # because of G6 identity (they may still legitimately be ADMIT or
-        # HOLD depending on evidence -- never silently absent).
-    assert result["verified"] or result["held"]
+        assert candidate.work.gate_results["G6_discovery_relevance"] is True
+        # Structural guarantee: no `decision` attribute exists at all.
+        assert not hasattr(candidate, "decision")
 
 
 def test_discovery_mode_does_not_reject_divorce_and_mediator_titles_either():
@@ -291,13 +291,13 @@ def test_discovery_mode_does_not_reject_divorce_and_mediator_titles_either():
 
     result = discover_citations(context=DISCOVERY_CONTEXT, adapters=[adapter])
 
-    surfaced_ids = {cu.work.primary.source_record_id for cu in result["cite_uses"]}
-    # At minimum, both were evaluated (present as a CiteUse) rather than
+    surfaced_ids = {c.work.primary.source_record_id for c in result["candidates"]}
+    # At minimum, both were evaluated and surfaced as candidates rather than
     # vanishing without a trace the way the old identity-mode bug made them
     # vanish (see test_old_identity_mode_rejects_wife_rights_purely_on_g6_mismatch).
-    assert surfaced_ids, "no candidate was evaluated at all -- regression"
-    for cu in result["cite_uses"]:
-        assert cu.decision in Decision.ALL
+    assert surfaced_ids, "no candidate was surfaced at all -- regression"
+    for candidate in result["candidates"]:
+        assert not hasattr(candidate, "decision")
 
 
 def test_gate_g6_discovery_relevance_passes_for_each_real_title():
@@ -349,46 +349,89 @@ def test_cite_use_with_hold_decision_is_constructible_and_recorded_as_hold():
     assert cite_use.decision != Decision.ADMIT
 
 
-def test_hold_decision_never_appears_in_discover_citations_verified_list():
-    """End-to-end AdmitFilter regression using a real ground-truth title:
-    seed a synthetic adapter with the mediators work but with a thin/
-    off-topic abstract relative to the claim (so `classify_relation()`
-    returns UNCLEAR and the admission decision lands on HOLD, not ADMIT),
-    and confirm it never appears in `discover_citations()`'s public
-    `verified` ("safe to cite") list -- only in `held`, with the true
-    decision always recoverable from `cite_uses`."""
+def test_discover_citations_surfaces_thin_evidence_candidate_without_any_decision():
+    """Successor to the old AdmitFilter HOLD regression, updated for the
+    2026-09-20 round-3 structural fix: a candidate with thin/off-topic
+    evidence (the kind that used to classify as UNCLEAR -> HOLD under the
+    old admission-decision path) still simply surfaces as a
+    `DiscoveredCandidate` -- there is no decision computed at all to land
+    on ADMIT/REJECT/HOLD, thin evidence or not, because discovery never
+    asks that question in the first place."""
     mediators_raw = _thaijo_raw(
         "mediators-hold-1",
         TITLE_MEDIATORS,
         ["นูรฮายาตี เจะและ"],
         # Deliberately thin/off-topic abstract -- shares the discovery
         # topic's TITLE vocabulary (so G6_discovery_relevance still passes)
-        # but gives classify_relation() nothing directional to work with.
+        # but is irrelevant to discovery, which classifies no relation.
         "บันทึกสั้นๆ เกี่ยวกับตารางงานประชุมประจำเดือนของเจ้าหน้าที่",
     )
     adapter = _StaticThaiJOAdapter([mediators_raw])
 
     result = discover_citations(context=DISCOVERY_CONTEXT, adapters=[adapter])
 
-    cite_use = next(
-        cu for cu in result["cite_uses"]
-        if cu.work.primary.source_record_id == "mediators-hold-1"
+    candidate = next(
+        c for c in result["candidates"]
+        if c.work.primary.source_record_id == "mediators-hold-1"
     )
-    if cite_use.decision == Decision.HOLD:
-        assert result["verified"] == []
-        assert "THAIJO:mediators-hold-1" in result["held"]
-        assert "THAIJO:mediators-hold-1" not in {
-            f"{c.work.primary.source_adapter}:{c.work.primary.source_record_id}"
-            for c in result["verified"]
-        }
+    assert not hasattr(candidate, "decision")
+    assert candidate.evidence_level in EvidenceLevel.ALL
+
+
+def test_discover_citations_never_produces_a_decision():
+    """Direct demonstration of the structural (not conventional) guarantee
+    required by the task: `discover_citations()`'s own return value has no
+    key, and no object reachable from it, that carries an ADMIT/REJECT/HOLD
+    `Decision` -- and the type it returns (`DiscoveredCandidate`) rejects an
+    attempt to construct one with a `decision` at the type level, not just
+    "didn't happen to set one this run"."""
+    wife_rights_raw = _thaijo_raw(
+        "wife-rights-struct-1",
+        TITLE_WIFE_RIGHTS,
+        ["สมหญิง ใจดี"],
+        "บทความนี้ศึกษาสิทธิและหน้าที่ของภริยาตามหลักกฎหมายอิสลามในสังคมไทย "
+        "โดยเน้นประเด็นครอบครัวและมรดก",
+    )
+    adapter = _StaticThaiJOAdapter([wife_rights_raw])
+
+    result = discover_citations(context=DISCOVERY_CONTEXT, adapters=[adapter])
+
+    # (a) the return shape itself carries no decision-shaped key anymore.
+    assert set(result.keys()) == {"candidates", "rejected", "not_found_queries", "query_family"}
+    assert "cite_uses" not in result
+    assert "verified" not in result
+    assert "held" not in result
+
+    # (b) every object in `candidates` structurally lacks a `decision`.
+    assert result["candidates"], "expected at least one surfaced candidate"
+    for candidate in result["candidates"]:
+        assert not hasattr(candidate, "decision")
+        # dataclasses.fields() is the authoritative field list -- confirms
+        # this is a type-level absence, not just an unset instance attr.
+        import dataclasses
+
+        field_names = {f.name for f in dataclasses.fields(candidate)}
+        assert "decision" not in field_names
+
+    # (c) attempting to construct one WITH a decision is a hard TypeError
+    # at the constructor boundary, not a silent no-op or an accepted-then-
+    # ignored kwarg -- this is the "type-rejected", not merely
+    # "didn't happen in this test", demonstration the task asked for.
+    candidate = result["candidates"][0]
+    try:
+        DiscoveredCandidate(
+            work=candidate.work,
+            context=candidate.context,
+            query=candidate.query,
+            decision=Decision.ADMIT,  # type: ignore[call-arg]
+        )
+    except TypeError as exc:
+        assert "decision" in str(exc)
     else:
-        # If the synthetic abstract happened to classify as directional
-        # (SUPPORTS/CHALLENGES) rather than UNCLEAR, the decision would be
-        # ADMIT or REJECT instead of HOLD -- either way, a non-ADMIT
-        # decision must still never leak into `verified`.
-        assert cite_use.decision in Decision.ALL
-        if cite_use.decision != Decision.ADMIT:
-            assert result["verified"] == []
+        raise AssertionError(
+            "DiscoveredCandidate accepted a 'decision' kwarg -- the "
+            "structural guarantee is broken."
+        )
 
 
 def test_hold_decision_never_appears_in_verify_cite_public_output():

@@ -40,6 +40,22 @@ designed for "is this the exact work being cited", not "is this on-topic" --
 so a real, relevant paper was rejected whenever its title did not share 2+
 literal tokens with a topic phrase that was never meant to BE a citation
 string. See `discover_citations()`'s own docstring for the fix.
+
+**STRUCTURAL discovery/identity separation (2026-09-20, round 3):** the fix
+above still let `discover_citations()` reach an ADMIT/REJECT/HOLD decision
+in principle (it called `gate_admission_decision()` and built `CiteUse`
+objects, exactly like `resolve_citations()`). A discovery call answers "what
+candidate knowledge is reachable for this topic," not "is source X
+admissible evidence for claim Y" -- a topic has no support/challenge
+direction, so that question has no truth-condition to evaluate for one.
+`discover_citations()` below therefore no longer imports or calls
+`evidence.relation.classify_relation()` or `evidence.verifier
+.gate_admission_decision()`, and never constructs a `CiteUse` -- it returns
+`core.models.DiscoveredCandidate` instead, a type with no `decision` field
+at all (see that type's own docstring for why this is a structural, not
+conventional, guarantee). Only `resolve_citations()` (the identity/VERIFY
+path, which requires an actual claim string via `ContextContract`'s
+`mode=ContractMode.VERIFY`) may produce ADMIT/REJECT/HOLD.
 """
 
 from __future__ import annotations
@@ -52,7 +68,9 @@ from thaicite.core.models import (
     CiteUse,
     Citation,
     ContextContract,
+    ContractMode,
     Decision,
+    DiscoveredCandidate,
     EvidenceLevel,
     VerificationState,
     freeze_context,
@@ -116,6 +134,7 @@ def resolve_citations(
     for query in queries:
         active_contract = context_contract or freeze_context(
             claim=context or query,
+            mode=ContractMode.VERIFY,
             created_before_search=False,
         )
         candidates: list[Candidate] = []
@@ -151,7 +170,7 @@ def resolve_citations(
                 rejected[f"query::{query}"] = {
                     "reason": "adapter_error",
                     "by_adapter": {
-                        name: {"state": err.state, "message": err.message}
+                        name: {"state": err.state, "message": err.message, "coverage": err.coverage}
                         for name, err in non_not_found.items()
                     },
                 }
@@ -164,7 +183,7 @@ def resolve_citations(
                         "the work does not exist."
                     ),
                     "by_adapter": {
-                        name: {"state": err.state, "message": err.message}
+                        name: {"state": err.state, "message": err.message, "coverage": err.coverage}
                         for name, err in errors_by_adapter.items()
                     },
                 }
@@ -308,6 +327,60 @@ def _evaluate_work(
         }
 
 
+def _evaluate_discovered_work(
+    work,
+    *,
+    context: str,
+    query: str,
+    candidates_out: list[DiscoveredCandidate],
+    rejected: dict[str, dict[str, Any]],
+) -> None:
+    """Run G1-G7 (with the discovery-mode G6 relevance variant in G6's slot)
+    against ONE `work` and file the result into the caller's `candidates_out`
+    / `rejected` accumulators. This is `discover_citations()`'s ONLY path to
+    a result, and it is structurally incapable of producing an admission
+    decision: `evidence.relation.classify_relation()` and
+    `evidence.verifier.gate_admission_decision()` are never imported into
+    this function's call graph, and the type it appends to `candidates_out`
+    (`core.models.DiscoveredCandidate`) has no `decision` field to set one
+    on even if it wanted to -- see that type's own docstring. Contrast with
+    `_evaluate_work()` above (the ONLY function that calls
+    `gate_admission_decision()`/constructs a `CiteUse`, used exclusively by
+    `resolve_citations()`'s identity/VERIFY path).
+    """
+    apply_conflict_state(work)
+    work, matched_keywords = verify(work, context=context, query=query, mode=VERIFY_MODE_DISCOVERY)
+
+    if work.state == VerificationState.VERIFIED:
+        evidence_text = work.primary.abstract or ""
+        evidence_level = (
+            EvidenceLevel.ABSTRACT if evidence_text.strip() else EvidenceLevel.METADATA
+        )
+        candidates_out.append(
+            DiscoveredCandidate(
+                work=work,
+                context=context,
+                query=query,
+                evidence_level=evidence_level,
+                matched_keywords=matched_keywords,
+                thai_relevance=work.primary.thai_relevance,
+                relevance_debug=dict(
+                    work.g6_identity_debug.get("discovery_relevance", {})
+                ),
+            )
+        )
+    else:
+        label = f"{work.primary.source_adapter}:{work.primary.source_record_id}"
+        rejected[label] = {
+            "reason": _rejection_reason(work),
+            "state": work.state,
+            "gate_results": work.gate_results,
+            "conflicts": work.conflicts,
+            "title": work.primary.title,
+            "query": query,
+        }
+
+
 def discover_citations(
     context: str,
     adapters: list[SourceAdapter],
@@ -315,7 +388,7 @@ def discover_citations(
     extra_queries: list[str] | None = None,
 ) -> dict[str, Any]:
     """Discovery-mode entry point: broad CONTEXT -> real, topically-relevant
-    citations -- the `find_cites()` / `thaicite find` path (see
+    candidate works -- the `find_cites()` / `thaicite find` path (see
     mcp_server.py, cli.py).
 
     This is deliberately a SEPARATE function from `resolve_citations()`,
@@ -325,7 +398,9 @@ def discover_citations(
 
       - `resolve_citations()` -- unchanged, identity-verification mode.
         "Is THIS candidate the SAME work as THIS citation string?" Used by
-        `verify_cite()` only.
+        `verify_cite()` only. The ONLY path that may produce an
+        ADMIT/REJECT/HOLD `Decision` -- it requires an actual claim string
+        (`ContextContract` in `mode=ContractMode.VERIFY`).
       - `discover_citations()` (this function) -- discovery mode. "What
         real, relevant work exists for this broad topic?" G6's strict
         candidate-vs-query identity match is NOT required here (see
@@ -340,37 +415,66 @@ def discover_citations(
     bounded Support x Challenge query family (ARCHITECTURE.md SS91) and
     searches every adapter with every query in that family. Results are
     then FUSED/DEDUPED across the whole family -- a single `resolve_identities()`
-    pass over the combined candidate pool -- BEFORE relevance/admission
-    logic runs, so a real-world work found via two different query variants
-    becomes ONE CanonicalWork/CiteUse, never two competing entries for the
+    pass over the combined candidate pool -- BEFORE relevance logic runs, so
+    a real-world work found via two different query variants becomes ONE
+    CanonicalWork/DiscoveredCandidate, never two competing entries for the
     same work.
 
-    Still returns the SAME 3-way ADMIT/REJECT/HOLD decision shape as
-    `resolve_citations()` (plus a `query_family` key showing the
-    support/challenge queries actually searched) -- discovery mode is
-    lenient about bibliographic IDENTITY matching only; a discovered,
-    topically-relevant candidate whose evidence does not clearly support
-    the claim still lands on HOLD, never a force-ADMIT (see
-    `evidence/verifier.py::gate_admission_decision`, `mode="discovery"`).
+    **STRUCTURALLY incapable of admitting anything (2026-09-20, round 3):**
+    a topic has no support/challenge direction, so this function never
+    calls `evidence.relation.classify_relation()` or
+    `evidence.verifier.gate_admission_decision()`, and never constructs a
+    `CiteUse` -- there is no ADMIT/REJECT/HOLD `Decision` anywhere in this
+    function's return value, even in principle. `candidates` below holds
+    `core.models.DiscoveredCandidate` objects, a type with no `decision`
+    field to set one on (see that type's docstring and
+    `_evaluate_discovered_work()` above, this function's only path to a
+    result). "Found and topically relevant" is answered here; "admissible
+    evidence for claim Y" is `resolve_citations()`'s question alone.
 
     Args:
-        context: the broad claim/topic to discover citations for.
+        context: the broad topic to discover candidate works for.
         adapters: adapters to search, e.g. `routing.router.route(...).adapters`.
         context_contract: optional frozen scope (see `resolve_citations()`);
-            built automatically from `context` when not supplied.
+            built automatically (in `mode=ContractMode.DISCOVER`, no claim
+            required) from `context` when not supplied. Currently
+            informational only -- discovery never consumes `claim`/
+            `intended_relation` from it, since it never reaches a decision
+            that would need either.
         extra_queries: optional additional raw query strings to search
             alongside the generated Support x Challenge family (e.g. a
             caller-supplied exact phrase); deduped against the family.
-    """
-    verified: list[Citation] = []
-    rejected: dict[str, dict[str, Any]] = {}
-    held: dict[str, dict[str, Any]] = {}
-    not_found_queries: dict[str, dict[str, Any]] = {}
-    cite_uses: list[CiteUse] = []
 
-    active_contract = context_contract or freeze_context(
-        claim=context, created_before_search=False
+    Returns:
+        {
+          "candidates": list[DiscoveredCandidate]  # real, topically-relevant
+                                         # works (G1-G7 identity/existence +
+                                         # G6_discovery_relevance all passed).
+                                         # Never carries a decision -- see
+                                         # above.
+          "rejected": dict[str, dict]   # label -> {"reason", "state",
+                                         # "gate_results", ...} -- candidates
+                                         # that failed a G1-G7/relevance gate
+                                         # (existence/identity issues only,
+                                         # never an admissibility verdict).
+          "not_found_queries": dict[str, dict]  # query -> {"state", "note", "by_adapter"}
+          "query_family": dict           # the support/challenge queries
+                                          # actually searched
+                                          # (routing/query_planner.py).
+        }
+    """
+    candidates_out: list[DiscoveredCandidate] = []
+    rejected: dict[str, dict[str, Any]] = {}
+    not_found_queries: dict[str, dict[str, Any]] = {}
+
+    # Built for scope-freezing symmetry with resolve_citations() and to
+    # validate any caller-supplied contract, but not otherwise consumed
+    # below -- discovery has no claim/intended_relation to read (see
+    # docstring above and ContractMode.DISCOVER's own docstring).
+    _active_contract = context_contract or freeze_context(
+        claim=None, mode=ContractMode.DISCOVER, created_before_search=False
     )
+    del _active_contract
 
     query_family = plan_queries(context)
     queries = list(
@@ -418,7 +522,7 @@ def discover_citations(
                         "query-family variant -- not a genuine empty result."
                     ),
                     "by_adapter": {
-                        name: {"state": err.state, "message": err.message}
+                        name: {"state": err.state, "message": err.message, "coverage": err.coverage}
                         for name, err in non_not_found.items()
                     },
                 }
@@ -431,7 +535,7 @@ def discover_citations(
                         "searched, not that no relevant work exists."
                     ),
                     "by_adapter": {
-                        name: {"state": err.state, "message": err.message}
+                        name: {"state": err.state, "message": err.message, "coverage": err.coverage}
                         for name, err in errors_by_adapter.items()
                     },
                 }
@@ -453,24 +557,18 @@ def discover_citations(
                 }
             )
             query_label = "; ".join(origin_queries) if origin_queries else context
-            _evaluate_work(
+            _evaluate_discovered_work(
                 work,
                 context=context,
                 query=query_label,
-                active_contract=active_contract,
-                mode=VERIFY_MODE_DISCOVERY,
-                verified=verified,
+                candidates_out=candidates_out,
                 rejected=rejected,
-                held=held,
-                cite_uses=cite_uses,
             )
 
     return {
-        "verified": verified,
+        "candidates": candidates_out,
         "rejected": rejected,
-        "held": held,
         "not_found_queries": not_found_queries,
-        "cite_uses": cite_uses,
         "query_family": query_family,
     }
 

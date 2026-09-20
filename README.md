@@ -141,7 +141,7 @@ LOCAL_EVIDENCE_NOT_FOUND   ≠   NO_LOCAL_EVIDENCE_EXISTS
 
 สิ่งที่เรายืนยันว่ายังไม่มีใครทำครบคือ **หน่วยที่ตรวจ**: `Citation Use = Claim × Source × Evidence × Context` แทนที่จะ verify ที่ระดับ paper เฉย ๆ — และการทำให้ Thailand เป็น first-class citizen ของ pipeline ไม่ใช่ afterthought
 
-> **ระดับความมั่นใจปัจจุบัน (มาตรวัดของโปรเจกต์เอง): `Dr` — สถาปัตยกรรมที่มีเหตุผลรองรับ ผ่าน unit test 106/106 ตัว (รวมการทดสอบเชิงรุกภาษาไทยรอบสอง ที่พบและแก้บั๊กร้ายแรง 4 จุดจริง — ดู [`docs/KNOWN_ISSUES.md`](./docs/KNOWN_ISSUES.md)) แต่ยังไม่ใช่ "ระบบที่พิสูจน์แล้วว่าดีกว่า" จนกว่าจะผ่าน live adversarial test เต็มรูปแบบ**
+> **ระดับความมั่นใจปัจจุบัน (มาตรวัดของโปรเจกต์เอง): `Dr` — สถาปัตยกรรมที่มีเหตุผลรองรับ ผ่าน unit test 161/161 ตัว (รวมการทดสอบเชิงรุกภาษาไทย 3 รอบ ที่พบและแก้บั๊กร้ายแรงจริงทุกรอบ รวมถึงการแยก Discovery/Authorization แบบโครงสร้าง และ False-ADMIT จาก semantic opposite — ดู [`docs/KNOWN_ISSUES.md`](./docs/KNOWN_ISSUES.md) สำหรับข้อจำกัดที่ยังเหลืออยู่แบบตรงไปตรงมา) แต่ยังไม่ใช่ "ระบบที่พิสูจน์แล้วว่าดีกว่า" จนกว่าจะผ่าน live adversarial test เต็มรูปแบบ**
 
 การทดสอบเชิงรุก (adversarial) 100 สถานการณ์ครั้งแรกพบ **จุดบกพร่องสำคัญจริง** ในกลไกตรวจความเกี่ยวข้อง — เรา**ไม่ซ่อน**ผลลัพธ์นั้น และตอนนี้แก้ไขแล้ว (พิสูจน์ด้วย unit test) แต่ยังไม่ได้ทดสอบซ้ำแบบ live เต็ม 100 ครั้ง เพราะ OpenAlex ยัง rate-limit อยู่ ทุกรายงาน ทั้งที่ผ่านและไม่ผ่าน อยู่ใน [`tests/golden/`](./tests/golden/) และ [`docs/KNOWN_ISSUES.md`](./docs/KNOWN_ISSUES.md) แบบเปิดเผยทั้งหมด นี่คือหลักการเดียวกับที่เราบังคับใช้กับ citation ของผู้อื่น — ใช้กับตัวเราเองด้วย
 
@@ -155,7 +155,7 @@ LOCAL_EVIDENCE_NOT_FOUND   ≠   NO_LOCAL_EVIDENCE_EXISTS
 4. ✅ **Support × Challenge + Global × Local** search — **สร้างแล้ว** (`routing/router.py`, `routing/query_planner.py`, Thai-first ordering)
 5. ⏸️ **Fail-able negative-control benchmark ระดับเต็ม (live 100 scenarios)** — ยังรอ เพราะ OpenAlex ยัง rate-limit อยู่ และตามคำสั่งให้สร้างระบบเต็มก่อนแล้วค่อยเทส — ดูสถานะล่าสุดที่ [`docs/KNOWN_ISSUES.md`](./docs/KNOWN_ISSUES.md)
 
-**Adapter จริงที่ใช้งานได้แล้ว:** OpenAlex, Crossref, PubMed (ยืนยันด้วย live request จริง) — ThaiJO เขียนโค้ดครบแล้วแต่ endpoint พื้นฐานยังไม่ยืนยันสด (ดู KNOWN_ISSUES.md)
+**Adapter จริงที่ใช้งานได้แล้ว:** OpenAlex, Crossref, PubMed (ยืนยันด้วย live request จริง) — ThaiJO ปรับสถาปัตยกรรมรอบ 3 (2026-09-20) เป็น **Harvester + Local Index**: OAI-PMH เป็น harvesting protocol ไม่ใช่ search API, จึงแยก `adapters/thaijo_harvester.py` (ดึงข้อมูลจริงทีละ endpoint ด้วย subdomain URL ที่แก้ไขแล้ว เช่น `https://sc01.tci-thaijo.org/index.php/index/oai` — ยืนยันสดแล้วว่า reachable ด้วย `?verb=Identify` HTTP 200) เก็บลง SQLite+FTS5 local index (`adapters/thaijo_index.py`) แล้วให้ `adapters/thaijo.py::ThaiJOAdapter` เป็น thin wrapper ค้นจาก local index แทนการยิง network ทุกครั้งที่ search — **ต้องรัน `python -m thaicite.adapters.thaijo_harvester --sync` ก่อนใช้งานจริง** (ดู `docs/ARCHITECTURE_NOTE.md`, KNOWN_ISSUES.md)
 
 **ยังไม่สร้าง (ตั้งใจ):** public ID infrastructure ของตัวเอง, citation graph ของตัวเอง, local corpus ขนาดใหญ่, vector database, UI ใด ๆ, PMC full-text fetcher, TNRR/TCI/TDC/DataCite adapters — ตลาดทำสิ่งเหล่านี้ดีกว่าเราอยู่แล้ว หรือยังไม่ถึงคิวตาม v1 scope
 

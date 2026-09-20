@@ -32,8 +32,9 @@ from thaicite.adapters.crossref import CrossrefAdapter
 from thaicite.adapters.openalex import OpenAlexAdapter
 from thaicite.adapters.pubmed import PubMedAdapter
 from thaicite.adapters.thaijo import ThaiJOAdapter
+from thaicite.core import coverage as cov
 from thaicite.core.engine import discover_citations, resolve_citations
-from thaicite.core.models import Citation
+from thaicite.core.models import Citation, DiscoveredCandidate
 from thaicite.routing.router import route
 
 try:
@@ -70,8 +71,33 @@ def _citation_to_dict(citation: Citation) -> dict[str, Any]:
     }
 
 
+def _discovered_candidate_to_dict(candidate: DiscoveredCandidate) -> dict[str, Any]:
+    """Same field shape as `_citation_to_dict()` plus `evidence_level`, and
+    deliberately WITHOUT any `verified`/`decision`/boolean-admissibility
+    field -- `DiscoveredCandidate` has no such field to read one from (see
+    core/models.py), and this function must not invent one either. A
+    caller that needs an admissibility verdict for a specific claim calls
+    `verify_cite()`, not `find_cites()`.
+    """
+    primary = candidate.work.primary
+    return {
+        "title": primary.title,
+        "authors": list(primary.authors),
+        "year": primary.year,
+        "doi": primary.doi,
+        "pmid": primary.pmid,
+        "source_adapter": primary.source_adapter,
+        "source_record_id": primary.source_record_id,
+        "url": primary.url,
+        "thai_relevance": list(candidate.thai_relevance),
+        "matched_keywords": list(candidate.matched_keywords),
+        "evidence_level": candidate.evidence_level,
+    }
+
+
 def find_cites(context: str, max_results: int = 10) -> dict[str, Any]:
-    """Find verified citations for `context` (ARCHITECTURE.md SS70).
+    """Find real, topically-relevant candidate works for `context`
+    (ARCHITECTURE.md SS70).
 
     This is the tool-handler function registered as the MCP tool
     `find_cites`. Signature and return shape are exactly what an MCP
@@ -80,22 +106,54 @@ def find_cites(context: str, max_results: int = 10) -> dict[str, Any]:
     directly unit-testable without a running MCP session).
 
     Args:
-        context: the claim/context to find citations for.
-        max_results: maximum number of citations to return (default 10).
+        context: the broad topic/claim to discover candidate works for.
+        max_results: maximum number of candidates to return (default 10).
 
     Returns:
         {
           "domain": str,                 # routing/router.py's classified domain
-          "citations": [ {..citation..} ],  # up to max_results ADMIT citations
+          "candidates": [ {..candidate..} ],  # up to max_results real,
+                                          # topically-relevant, identity-
+                                          # confirmed candidates. Renamed
+                                          # from the earlier "citations"
+                                          # field (2026-09-20, structural
+                                          # discovery/identity split) --
+                                          # "found and relevant" is NOT
+                                          # "admissible evidence for a
+                                          # claim"; no field here implies
+                                          # admissibility, because
+                                          # discovery mode never computes
+                                          # one (see core.engine
+                                          # .discover_citations()). Call
+                                          # verify_cite() to check whether a
+                                          # specific candidate is
+                                          # admissible for a specific claim.
           "not_found_queries": {...},    # honest "no record found" detail
-          "rejected_count": int,         # how many candidates failed a gate
-                                          # or an admission REJECT
-          "held_count": int,             # how many identity-confirmed
-                                          # candidates landed on HOLD (not
-                                          # yet admissible, never force-ADMITted)
+          "rejected_count": int,         # how many candidates failed a
+                                          # G1-G7/relevance gate (existence
+                                          # or identity issue only, never an
+                                          # admissibility rejection)
           "query_family": {...},         # the support/challenge query
                                           # family actually searched
                                           # (routing/query_planner.py)
+          "coverage": [ {...} ],         # Coverage Readout (core/coverage.py,
+                                          # founder-approved redesign
+                                          # 2026-09-20): one row per adapter
+                                          # (+ ThaiJO's per-endpoint rows)
+                                          # tagged OK/UNAVAILABLE/
+                                          # NOT_ATTEMPTED/NOT_CONNECTED.
+                                          # ALWAYS present, but READ THIS
+                                          # FIELD whenever "candidates" is
+                                          # empty -- "no candidates" must
+                                          # never be read as a universal
+                                          # negative without checking which
+                                          # sources this `coverage` says
+                                          # were actually searchable.
+          "coverage_all_negative": bool, # True only when EVERY coverage row
+                                          # is non-OK -- i.e. this result
+                                          # reflects a coverage failure, not
+                                          # a confirmed "searched and found
+                                          # nothing".
         }
 
     This is DISCOVERY mode (`core.engine.discover_citations()`): it does
@@ -107,26 +165,29 @@ def find_cites(context: str, max_results: int = 10) -> dict[str, Any]:
     `evidence/verifier.py::gate_g6_discovery_relevance`), and results are
     searched across a small Support x Challenge query family
     (`routing/query_planner.py::plan_queries`), fused/deduped before
-    relevance/admission logic runs. The 3-way ADMIT/REJECT/HOLD semantics
-    are unchanged: `citations` only ever contains ADMIT decisions, never a
-    force-ADMIT just because discovery mode is lenient about identity.
+    relevance logic runs. `discover_citations()` never computes an
+    ADMIT/REJECT/HOLD decision at all (structural guarantee, not merely a
+    filtered-out one) -- see its own module-level docstring.
 
-    Every citation in the returned list came from `core.engine
-    .discover_citations()` -- this function never invents a citation
+    Every candidate in the returned list came from `core.engine
+    .discover_citations()` -- this function never invents a candidate
     itself (AI NEVER BECOMES THE SOURCE, per core/models.py's module
     docstring).
     """
     adapters = _default_adapters()
     route_decision = route(context=context, query=context, available_adapters=adapters)
     result = discover_citations(context=context, adapters=route_decision.adapters)
-    verified = result["verified"][:max_results]
+    route_decision.update_track_status(result)
+    route_decision.update_coverage(result)
+    candidates = result["candidates"][:max_results]
     return {
         "domain": route_decision.domain,
-        "citations": [_citation_to_dict(c) for c in verified],
+        "candidates": [_discovered_candidate_to_dict(c) for c in candidates],
         "not_found_queries": result["not_found_queries"],
         "rejected_count": len(result["rejected"]),
-        "held_count": len(result["held"]),
         "query_family": result["query_family"],
+        "coverage": [e.to_dict() for e in route_decision.coverage],
+        "coverage_all_negative": cov.coverage_is_all_negative(route_decision.coverage),
     }
 
 
@@ -141,9 +202,34 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
     same admission gates (identity/content/scope) apply; there is no
     separate, weaker verification path.
 
+    **Two distinct roles, confirmed 2026-09-20 (Task 3) -- no separate
+    `claim` parameter is needed, and adding one would duplicate `context`
+    rather than clarify anything:**
+      - `citation` is the IDENTITY target -- what `gate_g6_identity_match`
+        compares the returned candidate's title/authors against, to answer
+        "is this candidate the SAME work as this citation string?"
+      - `context` is the CLAIM -- `resolve_citations()` builds its
+        `ContextContract` as `claim=(context or citation)` internally
+        (see `core/engine.py::resolve_citations`), and that `claim` is
+        exactly what `evidence.relation.classify_relation()` compares the
+        candidate's evidence text against, and what
+        `gate_admission_decision()` checks the resulting relation against
+        for the ADMIT/REJECT/HOLD call. This satisfies `ContextContract`'s
+        own `mode=ContractMode.VERIFY` requirement (Task 1: VERIFY REQUIRES
+        a non-empty claim, enforced in `ContextContract.__post_init__`) as
+        long as `context` or `citation` is non-empty -- a caller passing
+        both blank gets a clear `ValueError` from that constructor, not a
+        silent pass-through.
+      A caller who wants "is source X evidence for claim Y" (Y different
+      in wording from the plain citation string) already expresses that by
+      passing the claim as `context` and the citation string as `citation`
+      -- that is what this signature already does; no third parameter is
+      needed for the relation check to be meaningful.
+
     Args:
-        context: the claim/context the citation is meant to support.
-        citation: the citation string to verify (title, DOI, or free text).
+        context: the claim the citation is meant to support (see above).
+        citation: the citation string to verify (title, DOI, or free
+            text) -- the identity target (see above).
 
     Returns:
         {
@@ -174,6 +260,15 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
           "held": {...},            # HOLD admission detail, if identity was
                                      # confirmed but not (yet) admissible
           "not_found": {...},       # not-found detail, if nothing matched
+          "coverage": [ {...} ],    # Coverage Readout (core/coverage.py) --
+                                     # same shape/semantics as find_cites()'s
+                                     # `coverage` field; read it whenever
+                                     # `verified` is False and `not_found` is
+                                     # non-empty, so "not verified" never
+                                     # reads as a universal negative without
+                                     # checking which sources were actually
+                                     # searchable.
+          "coverage_all_negative": bool,
         }
     """
     adapters = _default_adapters()
@@ -181,6 +276,10 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
     result = resolve_citations(
         context=context, queries=[citation], adapters=route_decision.adapters
     )
+    route_decision.update_track_status(result)
+    route_decision.update_coverage(result)
+    coverage_dicts = [e.to_dict() for e in route_decision.coverage]
+    coverage_all_negative = cov.coverage_is_all_negative(route_decision.coverage)
 
     identity_verified = any(
         cite_use.work.state == "VERIFIED" for cite_use in result["cite_uses"]
@@ -201,6 +300,8 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
             "rejected": {},
             "held": {},
             "not_found": {},
+            "coverage": coverage_dicts,
+            "coverage_all_negative": coverage_all_negative,
         }
 
     return {
@@ -213,6 +314,8 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
         "rejected": result["rejected"],
         "held": result["held"],
         "not_found": result["not_found_queries"],
+        "coverage": coverage_dicts,
+        "coverage_all_negative": coverage_all_negative,
     }
 
 

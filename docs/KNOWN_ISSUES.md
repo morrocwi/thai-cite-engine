@@ -144,6 +144,138 @@ remain open); the multi-concept Query Planner from ARCHITECTURE.md §9 (topic/ge
 population decomposition with synonym expansion) is still not implemented — `query_planner.py`
 only does single-claim support/challenge framing, not multi-concept decomposition.
 
+## Round 3: ThaiJO rebuilt as Harvester + Local Index, corrected endpoint format confirmed live (2026-09-20, same day)
+
+Round 2's ThaiJO adapter treated `search(query)` as the unit of work — every call re-issued
+`ListRecords` against every configured endpoint (up to ~111 endpoint attempts per discovery
+call, since `core.engine.discover_citations()` fans a topic out into a Support x Challenge
+query family and called `search()` once per variant), under one SHARED 750-record budget
+across all endpoints combined in a fixed order — so the `so01`–`so20` endpoints (where most
+law/gender-topic content likely lives) were starved unless every earlier endpoint had already
+been drained. Worse, the endpoint URLs themselves — both the adapter's own code AND its own
+test suite — assumed the wrong convention.
+
+**Fix, structural not incremental:**
+
+1. **Corrected endpoint format** — ThaiJO's real OAI-PMH convention is subdomain-based, not
+   path-based: `https://{code}.tci-thaijo.org/index.php/index/oai` (e.g. `sc01.tci-thaijo.org`),
+   not `https://www.tci-thaijo.org/index.php/{code}/oai`. **Confirmed live this session**: a
+   single gentle `?verb=Identify` probe (10s timeout, no retry) against
+   `https://sc01.tci-thaijo.org/index.php/index/oai` returned **HTTP 200** with a well-formed
+   `<Identify>` response (`repositoryName = Thai Journals Online (ThaiJO)`,
+   `protocolVersion = 2.0`). Only this one code was probed this session (deliberately
+   conservative, per this project's own prior rate-limit incident); every other code's
+   reachability remains unconfirmed until a real `sync()` run records `OK` for it.
+2. **Harvester + Local Index split** — `src/thaicite/adapters/thaijo_harvester.py`
+   (`ThaiJOHarvester.sync()`) does the real, network-touching harvest as an explicit operator
+   step (`python -m thaicite.adapters.thaijo_harvester --sync`), one endpoint at a time,
+   independent `OK`/`UNAVAILABLE:<reason>`/`NOT_ATTEMPTED` status per endpoint, upserting into
+   `src/thaicite/adapters/thaijo_index.py` (`ThaiIndex`, SQLite+FTS5, title/abstract tokenized
+   through the same shared `normalize/tokenize.py` Thai-aware tokenizer used everywhere else).
+   `src/thaicite/adapters/thaijo.py::ThaiJOAdapter` is now a thin wrapper: `search()` queries
+   the local snapshot instantly (real FTS5 `MATCH` + `bm25()` ranking, OR-semantics across query
+   tokens, not the old AND-over-raw-split-tokens behavior) — no network call, no re-harvesting
+   per query variant. An unsynced/empty index returns an honest, explicitly-noted
+   `AdapterError` (never silently collapsed into a source-level `NOT_FOUND`).
+3. New offline tests: `tests/test_thaijo_index.py`, `tests/test_thaijo_harvester.py` (synthetic
+   OAI-PMH XML fixtures + temp SQLite dbs, no live network), and the ThaiJO section of
+   `tests/test_adapters_offline.py` rewritten to match the new thin-adapter shape. Full suite:
+   **120/120 passing.**
+
+**Still open**: `since=`-based incremental harvesting (OAI-PMH selective harvesting) is not
+implemented — every `sync()` does a full re-harvest per endpoint (correct, since upserts are
+idempotent, just not incrementally efficient); no live ThaiJO result should be trusted until an
+actual `sync()` run against the full endpoint set is completed and this note is updated with
+real per-endpoint `OK`/`UNAVAILABLE` counts.
+
+**Fixed-order endpoint-scan-budget starvation (round 2's known bias) — CONFIRMED FIXED by the
+Harvester + Local Index split above, not a separate fix**: round 2 shared one record budget
+across ALL endpoints, tried in a fixed order (`sc01`, `li01-05`, `ph01-05`, `he01-05`, then
+`so01-20`), so the `so01-20` endpoints were only reached once every earlier endpoint had already
+drained the shared budget. `ThaiJOHarvester.sync()` (item 2 above) gives every endpoint its OWN
+independent `resumptionToken` walk and its OWN `max_records_per_endpoint` budget — no endpoint's
+harvest can consume another's budget, so `so01-20` are no longer starved by scan order. Verified
+by `tests/test_thaijo_harvester.py::test_sync_each_endpoint_gets_its_own_status_independent_of_others`.
+
+## Coverage Readout (2026-09-20, founder-approved redesign)
+
+**Principle**: "ไม่พบงาน" (nothing found) must always be reported together with "ภายใต้แหล่งที่ค้นได้เหล่านี้"
+(given which sources were actually searchable) — never a bare "not found" that silently hides a
+source-availability problem. This closes the gap the Harvester + Local Index split (above) left
+open at QUERY time: `ThaiJOAdapter.search()` only ever knew "index empty" vs. "index non-empty,
+no match" — it could not tell a caller "genuinely searched a fresh snapshot" apart from "searched
+a snapshot that is stale/was built from a harvest where several endpoints actually failed".
+
+- `src/thaicite/core/coverage.py` — the shared vocabulary: `CoverageEntry` tagged one of
+  `OK` / `UNAVAILABLE` / `NOT_ATTEMPTED` / `NOT_CONNECTED`, plus `TNRR`/`TCI` declared
+  `NOT_CONNECTED` (out of v1 scope) so a readout never silently omits them.
+- `ThaiIndex` persists the last-known per-endpoint harvest status (`endpoint_status` table,
+  written by `ThaiJOHarvester.sync()`) and a staleness check (`IndexStats.is_stale()`, default
+  14-day threshold) — `ThaiJOAdapter.coverage_entries()` turns that into one row per category
+  code (never-synced endpoints report `NOT_ATTEMPTED`, not silently omitted), and
+  `ThaiJOAdapter.search()` attaches a full `coverage_summary()` to every `NOT_FOUND`
+  `AdapterError` it returns, distinguishing never-synced / stale-with-records / fresh-zero-match.
+- `routing/router.py::RouteDecision` gains a `coverage` list (sibling to `track_status`),
+  built a priori in `route()` and refined by the new `update_coverage()` after a real search
+  runs — same "one bad adapter must never look identical to a healthy one" discipline as
+  `update_track_status()`, at per-adapter (and, for ThaiJO, per-endpoint) granularity.
+- `cli.py`'s `find` command prints the coverage readout prominently (with a `** WARNING **` line
+  when every source came back non-`OK`) whenever the candidate list is empty; `mcp_server.py`'s
+  `find_cites()`/`verify_cite()` always include `coverage` + `coverage_all_negative` in their
+  return dict.
+- New tests: `tests/test_coverage_readout.py` (14 tests), including the worked example that
+  distinguishes a never-synced index, a stale-but-populated index, and a fresh index with a
+  genuine zero-match result. Full suite: **134/134 passing.**
+
+## Round 3 (same day): False-ADMIT via semantic opposites — fixed, with an honest finite-coverage caveat
+
+A third external adversarial test, live-reproduced this session, found `classify_relation()`
+(`src/thaicite/evidence/relation.py`) returning `SUPPORTS` for directly contradictory
+claim/evidence pairs whenever the contradiction used a semantic-opposite word rather than an
+explicit negation marker — e.g. `"...increases depression..."` vs. `"...decreases
+depression..."` → `SUPPORTS` (should be `CHALLENGES`). This is the single most dangerous
+failure mode in the whole project: a real, correctly-identified source, whose own evidence
+directly contradicts the claim, being silently admitted as if it supported it.
+
+**Fixed**: added `_DIRECTIONAL_PAIRS`, an explicit antonym table (English: increase/decrease,
+raise/lower, rise/fall, cause/prevent, positive/negative, improve/worsen, higher/lower,
+more/less, gain/loss, benefit/harm; Thai: เพิ่ม/ลด, เพิ่มขึ้น/ลดลง, สูงขึ้น/ต่ำลง, ดีขึ้น/แย่ลง,
+มี/ไม่มี, พบ/ไม่พบ) routed through the same negation-proximity logic as explicit negation
+markers — plus full Thai negation coverage (ไม่, มิได้, and the phrase ไม่พบว่า), previously
+entirely absent (the negation lexicon was English-only). The module was also restructured into
+two stages — `_interpret_relation()` (full heuristic) and a tighter, independent
+`_consistency_check()` — that must agree; on disagreement the result is `UNCLEAR`, not a
+forced pick.
+
+**Confirmed fixed** for the reported cases (increase/decrease, raises/lowers, and the Thai
+"เพิ่มสิทธิ" / "ไม่พบว่า...เพิ่มสิทธิ" pair — all now `CHALLENGES`, never `SUPPORTS`).
+
+**Honest limitation, found by the round-3 final review itself** (not by the founder's external
+test): this is a **finite, fixed antonym-pair lookup table, not general entailment/NLI**. The
+review independently tried two pairs *not* in the list —
+English **accelerate/decelerate** and Thai **ฟื้นฟู (recover) / แย่ลง (worsen)** — and **both
+still silently fell through to `SUPPORTS`**. The module's own docstring already states this is
+a "v1 deterministic baseline, not general entailment," but that caveat had not previously been
+surfaced here in `KNOWN_ISSUES.md` where a reader evaluating whether to trust this system would
+actually look for it. **Do not treat False-ADMIT-via-semantic-opposite as closed** — only the
+specific pairs in `_DIRECTIONAL_PAIRS` are covered; any antonym pair outside that list can still
+produce a false `SUPPORTS` → false `ADMIT` today. Closing this properly needs either a much
+larger curated pair list (diminishing returns, per the founder's own "not every antonym pair
+will ever be enumerated" reasoning) or, per `ARCHITECTURE.md` §98's original design, swapping
+`_interpret_relation()` for a real LLM-backed classifier (the function signature is already
+built to support this swap) — `_consistency_check()` should stay as an independent sanity layer
+either way.
+
+New regression tests: `tests/test_semantic_opposite_regression.py` (10 tests),
+`tests/test_discovery_cannot_admit_regression.py` (9 tests, bytecode-level proof discovery mode
+never references `gate_admission_decision`/`classify_relation`/`CiteUse`),
+`tests/test_thaijo_harvest_index_regression.py` (4 tests, all 4 real ground-truth titles
+surfaced via the real Harvester+Index against synthetic OAI-PMH XML), and
+`tests/test_coverage_unavailable_source_regression.py` (4 tests). Full suite: **161/161
+passing**, independently re-run and confirmed by a fresh adversarial review (round 3's own
+final review), which found no correctness issues beyond the documentation gap this section
+fills.
+
 ## References
 
 - Original findings (pre-fix): `tests/golden/CONCEPT_VALIDATION_REPORT.md`

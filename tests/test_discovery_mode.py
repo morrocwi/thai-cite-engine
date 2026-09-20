@@ -5,13 +5,20 @@ Covers, without any network call:
     `mode="discovery"` path -- G6's strict candidate-vs-query identity match
     is not required to reach VERIFIED; relevance is judged by topical
     overlap (`gate_g6_discovery_relevance`) instead, and the 3-way
-    ADMIT/REJECT/HOLD semantics are preserved (never a force-ADMIT).
+    ADMIT/REJECT/HOLD semantics are preserved (never a force-ADMIT) when
+    those functions are called directly.
   - Task 2: `core.engine.discover_citations()` wires in
     `routing.query_planner.plan_queries` and fuses/dedupes candidates found
-    under different family members into ONE CanonicalWork/CiteUse.
+    under different family members into ONE CanonicalWork/DiscoveredCandidate.
   - The real Thai ground-truth worked example from the task: a genuinely
     on-topic Islamic-law-and-women work, found under a broad, unspaced Thai
     discovery context, must not be rejected purely for identity mismatch.
+  - 2026-09-20 round 3 (structural discovery/identity separation):
+    `discover_citations()` itself never reaches an ADMIT/REJECT/HOLD
+    decision -- it returns `DiscoveredCandidate` objects (no `decision`
+    field) instead of `CiteUse`/`Citation`. See `test_thai_ground_truth_
+    regression.py`'s `test_discover_citations_never_produces_a_decision`
+    for the direct structural-impossibility demonstration.
 
 Reuses the same offline OpenAlex/ThaiJO-shaped fixture helpers already used
 by test_cite_use_gate.py / test_engine_offline.py -- no mocking of the
@@ -24,7 +31,7 @@ from thaicite.adapters.base import RawRecord
 from thaicite.adapters.openalex import OpenAlexAdapter
 from thaicite.adapters.thaijo import ThaiJOAdapter
 from thaicite.core.engine import discover_citations, resolve_citations
-from thaicite.core.models import CanonicalWork, Decision
+from thaicite.core.models import CanonicalWork
 from thaicite.evidence.verifier import (
     gate_g6_discovery_relevance,
     gate_g6_identity_match,
@@ -140,19 +147,22 @@ def test_discovery_relevance_requires_real_overlap_not_one_generic_word():
 # ------------------------------------------------------- Task 1 (decision) --
 
 
-def test_discovery_mode_still_holds_when_evidence_does_not_clearly_support():
-    """Lenient identity matching in discovery mode must never force-ADMIT a
-    candidate whose evidence does not clearly support the claim -- it still
-    lands on HOLD, the same 3-way semantics as identity mode."""
+def test_discovery_mode_surfaces_candidate_regardless_of_evidence_directionality():
+    """Discovery mode never computes an admission decision at all (2026-09-20
+    round 3) -- a candidate whose evidence would be directionally UNCLEAR
+    under identity mode's `classify_relation()` still surfaces as a plain
+    `DiscoveredCandidate` here (identity/existence + topical relevance are
+    all that gate discovery), because "is this reachable knowledge for the
+    topic" does not depend on whether the evidence supports/challenges any
+    particular claim -- there is no claim in scope to support or challenge."""
     work_json = _openalex_work(
         work_id="D4",
         title="AI tutoring systems and engagement outcomes",
         authors=["Pat Lee"],
         year=2023,
         doi="10.1/d4",
-        # Zero overlap with the claim below -> classify_relation() returns
-        # UNCLEAR (no shared topic terms at all), even though the TITLE
-        # alone is enough for discovery relevance to pass.
+        # Zero directional overlap with any hypothetical claim -- but this
+        # is irrelevant to discovery, which never classifies a relation.
         abstract="A brief note on unrelated facility maintenance schedules for staff members.",
     )
 
@@ -170,10 +180,13 @@ def test_discovery_mode_still_holds_when_evidence_does_not_clearly_support():
     result = discover_citations(
         context="AI tutoring systems for engagement", adapters=[_StubAdapter()]
     )
-    assert result["verified"] == []
-    assert len(result["held"]) == 1
-    cite_use = result["cite_uses"][0]
-    assert cite_use.decision == Decision.HOLD
+    assert result["rejected"] == {}
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    # Structural guarantee: no `decision` attribute exists on this type at
+    # all (not merely unset/None) -- see core/models.py::DiscoveredCandidate.
+    assert not hasattr(candidate, "decision")
+    assert candidate.work.gate_results["G6_discovery_relevance"] is True
 
 
 # --------------------------------------------------------------- Task 2 --
@@ -235,9 +248,10 @@ def test_discover_citations_fuses_dedupes_same_work_across_family():
 
     # The adapter was searched once per family member (more than once)...
     assert adapter.call_count >= 2
-    # ...but the fused/deduped result has exactly one CiteUse for the work.
-    assert len(result["cite_uses"]) == 1
-    assert len(result["verified"]) + len(result["held"]) + len(result["rejected"]) == 1
+    # ...but the fused/deduped result has exactly one evaluated entry for
+    # the work (either as a candidate, or as a single rejected label --
+    # never two competing entries for the same real-world work).
+    assert len(result["candidates"]) + len(result["rejected"]) == 1
 
 
 # ------------------------------------------------------- worked example --
@@ -286,15 +300,17 @@ def test_thai_islamic_law_women_context_surfaces_real_on_topic_work():
 
     new = discover_citations(context=context, adapters=[_ThaiWorkingAdapter()])
     # NEW discovery-mode behavior: no longer rejected for identity mismatch
-    # -- the real work is discovered and lands in verified or held (a real
-    # 3-way decision), never silently dropped as if it does not exist.
+    # -- the real work is discovered and lands in `candidates`, never
+    # silently dropped as if it does not exist. There is no ADMIT/REJECT/
+    # HOLD decision to check here at all (2026-09-20 round 3): discovery
+    # never computes one -- see DiscoveredCandidate's own docstring.
     assert any(
-        cu.work.primary.source_record_id == thai_work_raw_metadata["identifier"]
-        for cu in new["cite_uses"]
+        c.work.primary.source_record_id == thai_work_raw_metadata["identifier"]
+        for c in new["candidates"]
     )
-    cite_use = next(
-        cu for cu in new["cite_uses"]
-        if cu.work.primary.source_record_id == thai_work_raw_metadata["identifier"]
+    candidate = next(
+        c for c in new["candidates"]
+        if c.work.primary.source_record_id == thai_work_raw_metadata["identifier"]
     )
-    assert cite_use.gate_results["G6_discovery_relevance"] is True
-    assert cite_use.decision in (Decision.ADMIT, Decision.HOLD)
+    assert candidate.work.gate_results["G6_discovery_relevance"] is True
+    assert not hasattr(candidate, "decision")

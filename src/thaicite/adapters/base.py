@@ -51,6 +51,13 @@ class AdapterError:
     adapter: str
     message: str
     note: str | None = None
+    # Optional structured Coverage Readout detail (core/coverage.py) an
+    # adapter can attach to its own error -- e.g. ThaiJOAdapter attaches
+    # per-endpoint harvest status + index-staleness info here so a NOT_FOUND
+    # can be told apart from "this source was never actually searched" (see
+    # core/coverage.py's module docstring). `None` means the adapter has no
+    # sub-endpoint/coverage detail to add beyond `state`/`message`.
+    coverage: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.state not in _ADAPTER_ERROR_STATES:

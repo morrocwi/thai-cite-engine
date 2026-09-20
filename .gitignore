@@ -21,6 +21,11 @@ build/
 dist/
 *.egg
 
+# Local ThaiJO harvest snapshot (adapters/thaijo_index.py) -- a runtime
+# artifact created on first ThaiJOAdapter()/ThaiJOHarvester() use with
+# default paths, never source, never shipped.
+.thaicite_cache/
+
 # Editor / OS cruft
 .DS_Store
 .idea/

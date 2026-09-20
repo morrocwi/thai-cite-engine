@@ -20,12 +20,35 @@ after passing all of gates G1–G7 (`evidence/verifier.py`), never before.
 
 - **4 real adapters**: `adapters/openalex.py`, `adapters/crossref.py`,
   `adapters/pubmed.py` (all live-verified against their real APIs this
-  session), and `adapters/thaijo.py` (OAI-PMH client is implemented and
-  correctly distinguishes a real transport failure from `NOT_FOUND`, but its
-  base endpoint URL is an **unverified assumption** — ThaiJO's classic
-  `/index.php/index/oai` path returned HTTP 404 when checked live; see the
-  module's own docstring before trusting live ThaiJO results). All 5 error
-  states (`NOT_FOUND`/`RATE_LIMITED`/`TIMEOUT`/`ACCESS_DENIED`/
+  session), and ThaiJO, which round 3 (2026-09-20) rebuilt as a
+  **Harvester + Local Index split** instead of a per-query OAI-PMH search:
+  - `adapters/thaijo_harvester.py::ThaiJOHarvester.sync()` — the real
+    network-touching harvest, following `resumptionToken` pagination
+    per-endpoint, tracking each endpoint's own `OK` /
+    `UNAVAILABLE:<reason>` / `NOT_ATTEMPTED` status independently. Uses the
+    **corrected, subdomain-based** OAI-PMH convention
+    (`https://{code}.tci-thaijo.org/index.php/index/oai`), not the classic
+    `www.tci-thaijo.org/index.php/{code}/oai` path form round 2 assumed
+    (and its own test suite baked in) without ever verifying it live.
+    **Confirmed this session:** a single gentle `?verb=Identify` probe
+    against `https://sc01.tci-thaijo.org/index.php/index/oai` returned
+    **HTTP 200** with a valid `<Identify>` response — the corrected
+    convention is real, at least for this one code (no other code probed
+    this session — see the module's own docstring for the full rationale
+    and the deliberately-conservative probing policy).
+  - `adapters/thaijo_index.py::ThaiIndex` — a local SQLite+FTS5 snapshot
+    the harvester writes into, tokenized through the same shared
+    Thai-aware `normalize/tokenize.py` used everywhere else, queried with
+    real OR-semantics FTS5 `MATCH` + `bm25()` ranking.
+  - `adapters/thaijo.py::ThaiJOAdapter` — now a thin wrapper: `search()`
+    queries the local index instantly (no network call per query), and
+    returns an honest, clearly-noted `AdapterError` if the index was never
+    synced (never silently treated as a source-level `NOT_FOUND`).
+  - **Run a harvest before relying on ThaiJO results:**
+    `python -m thaicite.adapters.thaijo_harvester --sync`
+    (`--codes`, `--max-per-endpoint`, `--db-path` all optional — see that
+    module's docstring / `--help`).
+  All 5 error states (`NOT_FOUND`/`RATE_LIMITED`/`TIMEOUT`/`ACCESS_DENIED`/
   `PARSER_ERROR`) stay distinct across every adapter.
 - **Citation-Use model** (`core/models.py`: `CiteUse`, `EvidenceLevel`,
   `RelationLabel`, `ContextContract`) — verification is now keyed by
@@ -38,18 +61,32 @@ after passing all of gates G1–G7 (`evidence/verifier.py`), never before.
   the `verified`/`citations` list strictly by `decision == ADMIT`; a `HOLD`
   or `REJECT` decision can no longer leak into "safe to cite" output.
 - **Relation classification** (`evidence/relation.py`'s `classify_relation`)
-  — a deterministic v1 heuristic (negation/contrast-marker detection), not a
-  claim of solved natural-language entailment; it returns a label only and
-  never sets a decision itself (see `evidence/verifier.py` for the
-  decision logic). Now uses real Thai word segmentation (see round 2 below).
-- **Discovery mode vs. identity mode** (`core/engine.py`'s
-  `discover_citations()` vs. `resolve_citations()`) — `find_cites`/CLI `find`
-  use discovery mode (relevance-gated, genuinely calls
-  `routing/query_planner.py::plan_queries()` for a support+challenge query
-  family); `verify_cite` uses identity mode (strict candidate-vs-citation
-  bibliographic match). These are deliberately different gates for
-  deliberately different questions — see round 2 below for why this split
-  exists.
+  — a deterministic v1 heuristic, not a claim of solved natural-language
+  entailment; it returns a label only and never sets a decision itself (see
+  `evidence/verifier.py` for the decision logic). Uses real Thai word
+  segmentation (round 2). As of **round 3**, a two-stage
+  `_interpret_relation()` + `_consistency_check()` design also catches
+  semantic-opposite claim/evidence pairs (increase↔decrease, cause↔prevent,
+  etc., English and Thai) that previously produced a false `SUPPORTS` with
+  no explicit negation word present — **but this is still a finite, fixed
+  antonym-pair list, not general entailment**: round 3's own final review
+  found two pairs outside the list (accelerate/decelerate;
+  Thai ฟื้นฟู/แย่ลง) still silently pass as `SUPPORTS`. See
+  `docs/KNOWN_ISSUES.md`'s "Round 3" section for the full honest status —
+  **do not treat False-ADMIT-via-semantic-opposite as closed.**
+- **Discovery mode vs. identity mode, now a structural guarantee** —
+  `core/engine.py`'s `discover_citations()` (used by `find_cites`/CLI
+  `find`) is, as of round 3, **incapable of producing an ADMIT/REJECT/HOLD
+  decision at the type level**: it returns `DiscoveredCandidate` objects
+  that have no `decision` field at all (constructing one with
+  `decision=...` raises `TypeError`), and never imports/calls
+  `classify_relation()`, `gate_admission_decision()`, or `CiteUse` anywhere
+  in its call graph (verified by bytecode inspection in
+  `tests/test_discovery_cannot_admit_regression.py`, not just by convention
+  or a runtime filter that happened not to trigger). Only `verify_cite`'s
+  identity path (`resolve_citations()`, requiring an actual claim) can ever
+  produce a `Decision`. `routing/query_planner.py::plan_queries()` is
+  genuinely wired into the discovery path.
 - **Thai-first Source Router** (`routing/router.py`) — ThaiJO is ordered
   first for `THAI`/`THAI_HEALTH`/`GENERAL` domains (included by default even
   with no positive Thai signal, per design intent), and is the one deliberate
@@ -67,7 +104,13 @@ after passing all of gates G1–G7 (`evidence/verifier.py`), never before.
 - **CLI** (`thaicite find --context "..." [--debug]`) and an **MCP server**
   (`mcp_server.py`, genuinely functional in this environment, exposing
   `find_cites`/`verify_cite`).
-- **106 offline tests passing** (`PYTHONPATH=src python3 -m pytest tests/ -q`),
+- **Coverage Readout** (`core/coverage.py`, round 3) — `NOT_FOUND` is never
+  reported bare: every result carries a per-source (and, for ThaiJO,
+  per-endpoint) `OK`/`UNAVAILABLE`/`NOT_ATTEMPTED`/`NOT_CONNECTED` readout
+  (`TNRR`/`TCI` always declared `NOT_CONNECTED`, out of v1 scope, rather
+  than silently omitted), so "nothing found" always reads as "nothing
+  found, given this coverage" — never an implied universal negative.
+- **161 offline tests passing** (`PYTHONPATH=src python3 -m pytest tests/ -q`),
   none requiring live network access.
 
 Contact-email parameters (`THAICITE_CONTACT_EMAIL`, optional
@@ -112,12 +155,26 @@ ground-truth titles. Full detail, including what's still honestly unresolved (Th
 reachability, the still-unimplemented multi-concept Query Planner from ARCHITECTURE.md §9):
 **`docs/KNOWN_ISSUES.md`**.
 
+## Round 3 (same day): a second red-team found round 2 was correct in kind but insufficient — structural redesign
+
+A second, deeper external adversarial test against round 2's fixes found genuine gaps: the
+ThaiJO adapter's own endpoint URLs were still wrong (and its own test suite asserted the wrong
+format as correct), `ThaiJOAdapter.search()` never actually used the new Thai tokenizer (so the
+same 4 real ground-truth papers still failed end-to-end retrieval through the real adapter,
+even though round 2's regression test passed — it bypassed the real adapter via a stub),
+`find_cites()` could still in principle produce an ADMIT decision (not structurally forbidden),
+and — most severe — `classify_relation()` returned a **live-reproduced false `SUPPORTS`** for
+directly contradictory claim/evidence pairs using semantic-opposite words instead of explicit
+negation. Four structural moves, not more patches: `docs/KNOWN_ISSUES.md`'s "Round 3" section
+has the full detail, including the honest remaining limitation on relation classification
+(finite antonym-pair list) and the confirmed-live ThaiJO endpoint (`sc01`, HTTP 200).
+
 ## Validation status — read before trusting this build
 
-Both rounds of fixes above are **unit-tested (106/106 passing) but not yet confirmed by a
+All three rounds of fixes above are **unit-tested (161/161 passing) but not yet confirmed by a
 full live 100-scenario adversarial re-run** — OpenAlex rate-limiting has kept that re-run
 incomplete since round 1 (30 PASS / 0 FAIL / 70 INCONCLUSIVE as of the last attempt), and
-round 2 has not been live-tested at that scale at all yet. Per this project's own honesty
+rounds 2–3 have not been live-tested at that scale at all yet. Per this project's own honesty
 tier (`ARCHITECTURE.md` §72's `Dr` label): this is a plausible, carefully-tested
 architecture, not yet a "proven better than baseline" result. See `docs/KNOWN_ISSUES.md` and
 `tests/golden/` for the full trail.

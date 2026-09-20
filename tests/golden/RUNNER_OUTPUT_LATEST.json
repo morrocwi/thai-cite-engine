@@ -2,7 +2,7 @@
   "generated_from": "tests/run_adversarial_suite.py",
   "fixtures": "tests/fixtures/adversarial_100.json",
   "total_scenarios": 100,
-  "elapsed_seconds": 13.1,
+  "elapsed_seconds": 29.1,
   "counts_by_verdict": {
     "INCONCLUSIVE": 70,
     "PASS": 30
@@ -319,7 +319,7 @@
       "category": "SEMANTIC_TRAP",
       "expected_outcome": "NOT_FOUND",
       "verdict": "INCONCLUSIVE",
-      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "reason": "live OpenAlex transport failure (TIMEOUT) on every query this scenario needed",
       "status": "ok"
     },
     {

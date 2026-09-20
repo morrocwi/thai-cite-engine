@@ -208,6 +208,32 @@ class Decision:
     ALL = frozenset({ADMIT, REJECT, HOLD})
 
 
+class ContractMode:
+    """DISCOVER vs VERIFY -- the two questions a `ContextContract` can be
+    scoped for (2026-09-20, structural discovery/identity separation).
+
+    A topic has no support/challenge direction; only a claim does. These
+    are literally different truth-conditions, so the mode is carried as an
+    explicit field rather than inferred from whether `claim` happens to be
+    set:
+
+      DISCOVER -- "what candidate knowledge is reachable for this topic?"
+                  No `claim`/`intended_relation` requirement -- a topic is
+                  not a proposition and has nothing to be directional
+                  about. Used only by `core.engine.discover_citations()`.
+      VERIFY   -- "is source X admissible evidence for claim Y?" REQUIRES
+                  a real, non-empty `claim` -- see `ContextContract
+                  .__post_init__`, which raises a clear error if one is
+                  missing. Used only by `core.engine.resolve_citations()`
+                  (`verify_cite()`'s path).
+    """
+
+    DISCOVER = "DISCOVER"
+    VERIFY = "VERIFY"
+
+    ALL = frozenset({DISCOVER, VERIFY})
+
+
 @dataclass(frozen=True)
 class ContextContract:
     """Frozen scope, set BEFORE search (ARCHITECTURE.md SS93).
@@ -217,9 +243,16 @@ class ContextContract:
     paper it just happened to find -- construct a new `ContextContract`
     (a "v2") instead and keep both, rather than mutating this one (it is
     frozen for exactly that reason).
+
+    `mode` (`ContractMode.DISCOVER` / `ContractMode.VERIFY`, 2026-09-20)
+    states which of the two structurally different questions this contract
+    scopes. VERIFY (the default, matching this field's pre-existing
+    behavior byte-for-byte) requires `claim`; DISCOVER does not -- see
+    `ContractMode`'s own docstring and `__post_init__` below.
     """
 
-    claim: str
+    mode: str = ContractMode.VERIFY
+    claim: str | None = None
     intended_relation: str = RelationLabel.SUPPORTS
     population: str | None = None
     geography: str | None = None
@@ -228,20 +261,42 @@ class ContextContract:
     created_before_search: bool = True
 
     def __post_init__(self) -> None:
-        if not self.claim or not str(self.claim).strip():
+        if self.mode not in ContractMode.ALL:
             raise ValueError(
-                "ContextContract.claim is required -- a contract with no "
-                "claim has nothing to freeze scope around."
+                f"Unknown ContextContract mode: {self.mode!r}, expected "
+                f"one of {sorted(ContractMode.ALL)}"
             )
-        if self.intended_relation not in RelationLabel.ALL:
-            raise ValueError(
-                f"Unknown intended_relation: {self.intended_relation!r}"
-            )
+        if self.mode == ContractMode.VERIFY:
+            # VERIFY answers "is source X admissible evidence for claim Y?"
+            # -- that question has nothing to evaluate without a real claim,
+            # so a contract with no claim must fail loudly here rather than
+            # silently proceeding with an empty one (fail-closed).
+            if not self.claim or not str(self.claim).strip():
+                raise ValueError(
+                    "ContextContract.claim is required in VERIFY mode -- a "
+                    "VERIFY contract checks evidence against a proposition, "
+                    "which must be stated. If you meant to ask 'what "
+                    "candidate knowledge exists for this topic' instead, "
+                    "construct the contract with mode=ContractMode.DISCOVER "
+                    "(no claim required -- a topic has no support/challenge "
+                    "direction)."
+                )
+            if self.intended_relation not in RelationLabel.ALL:
+                raise ValueError(
+                    f"Unknown intended_relation: {self.intended_relation!r}"
+                )
+        # DISCOVER mode: `claim` is optional and `intended_relation` is not
+        # validated/required -- discovery never computes a directional
+        # admission decision that would consume either (see
+        # `core.engine.discover_citations()` and `DiscoveredCandidate`,
+        # which has no `decision` field for one to reach in the first
+        # place).
 
 
 def freeze_context(
-    claim: str,
+    claim: str | None = None,
     *,
+    mode: str = ContractMode.VERIFY,
     intended_relation: str = RelationLabel.SUPPORTS,
     population: str | None = None,
     geography: str | None = None,
@@ -251,10 +306,16 @@ def freeze_context(
 ) -> ContextContract:
     """Construct a `ContextContract`, freezing scope before retrieval.
 
-    `language` accepts a list for caller convenience and is stored as a
-    tuple so the resulting contract stays hashable/frozen throughout.
+    `mode` defaults to `ContractMode.VERIFY` (byte-identical to this
+    function's pre-existing behavior for every caller that only ever
+    passed `claim`) -- pass `mode=ContractMode.DISCOVER` explicitly (and
+    `claim=None`, the default) to freeze a topic-only discovery contract
+    instead. `language` accepts a list for caller convenience and is
+    stored as a tuple so the resulting contract stays hashable/frozen
+    throughout.
     """
     return ContextContract(
+        mode=mode,
         claim=claim,
         intended_relation=intended_relation,
         population=population,
@@ -312,3 +373,52 @@ class CiteUse:
             raise ValueError(f"Unknown relation: {self.relation!r}")
         if self.decision not in Decision.ALL:
             raise ValueError(f"Unknown decision: {self.decision!r}")
+
+
+@dataclass
+class DiscoveredCandidate:
+    """One real, topically-relevant candidate found under DISCOVER mode
+    (`core.engine.discover_citations()`, 2026-09-20 structural fix).
+
+    A discovery call answers "what candidate knowledge is reachable for
+    this topic," never "is source X admissible evidence for claim Y" --
+    those are different questions with different truth-conditions (a topic
+    has no support/challenge direction; only a claim does). This type is
+    STRUCTURALLY distinct from `CiteUse`, not `CiteUse` reused with
+    `decision` defaulted to `None` by convention: **it has no `decision`
+    field at all.** There is no `claim`/`relation`/`decision_debug` field
+    either, for the same reason -- none of those concepts apply to a topic.
+
+    `discover_citations()` never calls `evidence.verifier
+    .gate_admission_decision()` or constructs a `CiteUse` anywhere on the
+    path that produces this type, so it is not merely unlikely but
+    IMPOSSIBLE for a `DiscoveredCandidate` to carry an ADMIT/REJECT/HOLD
+    outcome -- attempting `DiscoveredCandidate(..., decision="ADMIT")`
+    raises `TypeError: unexpected keyword argument 'decision'` at
+    construction time, and there is no attribute to read one back from
+    even by accident.
+
+    Only carries: the identity-confirmed `work` (G1-G7 + the discovery-mode
+    G6 relevance gate already passed -- see `evidence/verifier.py
+    ::gate_g6_discovery_relevance`), which query-family member and context
+    it was found under, the topical relevance-signal keywords, an
+    `evidence_level` when a passage/abstract was actually fetched (`None`
+    otherwise -- never invented), and the non-gating Thai-relevance tags.
+    """
+
+    work: CanonicalWork
+    context: str
+    query: str
+    evidence_level: str | None = None
+    matched_keywords: list[str] = field(default_factory=list)
+    thai_relevance: list[str] = field(default_factory=list)
+    relevance_debug: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.work.state != VerificationState.VERIFIED:
+            raise ValueError(
+                "DiscoveredCandidate can only be constructed from a "
+                f"CanonicalWork in VERIFIED state, got {self.work.state!r}."
+            )
+        if self.evidence_level is not None and self.evidence_level not in EvidenceLevel.ALL:
+            raise ValueError(f"Unknown evidence_level: {self.evidence_level!r}")
