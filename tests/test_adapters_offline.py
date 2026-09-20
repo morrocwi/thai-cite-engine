@@ -245,11 +245,14 @@ def test_thaijo_to_candidates_url_identifier_without_doi():
 
 
 def test_thaijo_search_maps_no_records_match_to_not_found(monkeypatch):
+    # Every endpoint in the default fan-out returns the same canned
+    # noRecordsMatch response here; min_request_interval_s=0 keeps the
+    # (now many-endpoint) offline test fast -- no real sleeping.
     monkeypatch.setattr(
         "thaicite.adapters.thaijo.requests.get",
         lambda *a, **k: _FakeResponse(status_code=200, content=_NO_RECORDS_MATCH_XML),
     )
-    result = ThaiJOAdapter().search("some query")
+    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
     assert isinstance(result, AdapterError)
     assert result.state == VerificationState.NOT_FOUND
 
@@ -259,7 +262,7 @@ def test_thaijo_search_maps_protocol_error_to_parser_error(monkeypatch):
         "thaicite.adapters.thaijo.requests.get",
         lambda *a, **k: _FakeResponse(status_code=200, content=_PROTOCOL_ERROR_XML),
     )
-    result = ThaiJOAdapter().search("some query")
+    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
     assert isinstance(result, AdapterError)
     assert result.state == VerificationState.PARSER_ERROR
 
@@ -269,7 +272,7 @@ def test_thaijo_search_maps_invalid_xml_to_parser_error(monkeypatch):
         "thaicite.adapters.thaijo.requests.get",
         lambda *a, **k: _FakeResponse(status_code=200, content=b"not xml at all <<<"),
     )
-    result = ThaiJOAdapter().search("some query")
+    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
     assert isinstance(result, AdapterError)
     assert result.state == VerificationState.PARSER_ERROR
 
@@ -279,17 +282,20 @@ def test_thaijo_search_maps_429_to_rate_limited(monkeypatch):
         "thaicite.adapters.thaijo.requests.get",
         lambda *a, **k: _FakeResponse(status_code=429),
     )
-    result = ThaiJOAdapter().search("some query")
+    result = ThaiJOAdapter(min_request_interval_s=0).search("some query")
     assert isinstance(result, AdapterError)
     assert result.state == VerificationState.RATE_LIMITED
 
 
 def test_thaijo_search_real_success_shape_filters_on_query_terms(monkeypatch):
+    # Every endpoint returns the identical single-record page here; the
+    # adapter must de-duplicate by OAI identifier so the aggregate result
+    # still has exactly one Candidate-bound record, not one per endpoint.
     monkeypatch.setattr(
         "thaicite.adapters.thaijo.requests.get",
         lambda *a, **k: _FakeResponse(status_code=200, content=_LIST_RECORDS_XML),
     )
-    result = ThaiJOAdapter().search("communication medical")
+    result = ThaiJOAdapter(min_request_interval_s=0).search("communication medical")
     assert isinstance(result, list)
     assert len(result) == 1
     assert result[0].source_record_id == "oai:tci-thaijo.org:article/1001"
@@ -300,9 +306,190 @@ def test_thaijo_search_real_success_shape_query_terms_not_matched_is_not_found(m
         "thaicite.adapters.thaijo.requests.get",
         lambda *a, **k: _FakeResponse(status_code=200, content=_LIST_RECORDS_XML),
     )
-    result = ThaiJOAdapter().search("completely unrelated botany survey")
+    result = ThaiJOAdapter(min_request_interval_s=0).search("completely unrelated botany survey")
     assert isinstance(result, AdapterError)
     assert result.state == VerificationState.NOT_FOUND
+
+
+# -----------------------------------------------------------------------
+# resumptionToken pagination (single endpoint, isolated via endpoint_bases)
+# -----------------------------------------------------------------------
+
+_PAGE_1_WITH_TOKEN_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <ListRecords>
+    <record>
+      <header>
+        <identifier>oai:tci-thaijo.org:article/3001</identifier>
+      </header>
+      <metadata>
+        <oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"
+                    xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <dc:title>Paged medical communication study, page one</dc:title>
+          <dc:creator>Somsri Somjai</dc:creator>
+          <dc:date>2021-01-01</dc:date>
+        </oai_dc:dc>
+      </metadata>
+    </record>
+    <resumptionToken>cursor-abc-001</resumptionToken>
+  </ListRecords>
+</OAI-PMH>
+"""
+
+_PAGE_2_FINAL_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <ListRecords>
+    <record>
+      <header>
+        <identifier>oai:tci-thaijo.org:article/3002</identifier>
+      </header>
+      <metadata>
+        <oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"
+                    xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <dc:title>Paged medical communication study, page two</dc:title>
+          <dc:creator>Somsri Somjai</dc:creator>
+          <dc:date>2021-01-01</dc:date>
+        </oai_dc:dc>
+      </metadata>
+    </record>
+    <resumptionToken></resumptionToken>
+  </ListRecords>
+</OAI-PMH>
+"""
+
+
+def test_thaijo_search_follows_resumption_token_across_pages(monkeypatch):
+    calls = []
+
+    def _fake_get(url, params=None, timeout=None):
+        calls.append(dict(params or {}))
+        if params and params.get("resumptionToken") == "cursor-abc-001":
+            return _FakeResponse(status_code=200, content=_PAGE_2_FINAL_XML)
+        return _FakeResponse(status_code=200, content=_PAGE_1_WITH_TOKEN_XML)
+
+    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
+
+    adapter = ThaiJOAdapter(
+        endpoint_bases=["https://example.invalid/index.php/index/oai"],
+        min_request_interval_s=0,
+    )
+    result = adapter.search("medical communication")
+
+    assert isinstance(result, list)
+    ids = {r.source_record_id for r in result}
+    assert ids == {
+        "oai:tci-thaijo.org:article/3001",
+        "oai:tci-thaijo.org:article/3002",
+    }
+    # First request has no resumptionToken; the follow-up carries the one
+    # returned by page one, per OAI-PMH 2.0 -- proving a real second
+    # request was issued, not just a single-page harvest.
+    assert "resumptionToken" not in calls[0]
+    assert calls[1]["resumptionToken"] == "cursor-abc-001"
+
+
+def test_thaijo_search_respects_max_records_to_scan_across_pages(monkeypatch):
+    monkeypatch.setattr(
+        "thaicite.adapters.thaijo.requests.get",
+        lambda *a, **k: _FakeResponse(status_code=200, content=_PAGE_1_WITH_TOKEN_XML),
+    )
+    adapter = ThaiJOAdapter(
+        endpoint_bases=["https://example.invalid/index.php/index/oai"],
+        min_request_interval_s=0,
+        max_records_to_scan=1,
+    )
+    result = adapter.search("medical communication")
+    # Budget of 1 is reached after page one's single record; the adapter
+    # must stop instead of following the resumptionToken forever.
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0].source_record_id == "oai:tci-thaijo.org:article/3001"
+
+
+# -----------------------------------------------------------------------
+# multi-endpoint aggregation (independent per-endpoint error handling)
+# -----------------------------------------------------------------------
+
+
+def test_thaijo_search_aggregates_across_multiple_endpoints(monkeypatch):
+    def _fake_get(url, params=None, timeout=None):
+        if url == "https://example.invalid/index.php/li01/oai":
+            return _FakeResponse(status_code=200, content=_LIST_RECORDS_XML)
+        if url == "https://example.invalid/index.php/he01/oai":
+            return _FakeResponse(status_code=200, content=_PAGE_2_FINAL_XML)
+        raise AssertionError(f"unexpected endpoint in test: {url}")
+
+    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
+
+    adapter = ThaiJOAdapter(
+        endpoint_bases=[
+            "https://example.invalid/index.php/li01/oai",
+            "https://example.invalid/index.php/he01/oai",
+        ],
+        min_request_interval_s=0,
+    )
+    result = adapter.search("communication")
+    assert isinstance(result, list)
+    ids = {r.source_record_id for r in result}
+    # One record from each endpoint, aggregated together.
+    assert ids == {
+        "oai:tci-thaijo.org:article/1001",
+        "oai:tci-thaijo.org:article/3002",
+    }
+
+
+def test_thaijo_search_one_endpoint_404_does_not_block_the_others(monkeypatch):
+    def _fake_get(url, params=None, timeout=None):
+        if url == "https://example.invalid/index.php/index/oai":
+            return _FakeResponse(status_code=404, content=b"")
+        if url == "https://example.invalid/index.php/li01/oai":
+            return _FakeResponse(status_code=200, content=_LIST_RECORDS_XML)
+        raise AssertionError(f"unexpected endpoint in test: {url}")
+
+    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
+
+    adapter = ThaiJOAdapter(
+        endpoint_bases=[
+            "https://example.invalid/index.php/index/oai",
+            "https://example.invalid/index.php/li01/oai",
+        ],
+        min_request_interval_s=0,
+    )
+    result = adapter.search("communication medical")
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0].source_record_id == "oai:tci-thaijo.org:article/1001"
+
+
+def test_thaijo_search_all_endpoints_failing_reports_highest_priority_state(monkeypatch):
+    def _fake_get(url, params=None, timeout=None):
+        if url == "https://example.invalid/index.php/index/oai":
+            return _FakeResponse(status_code=404, content=b"")
+        if url == "https://example.invalid/index.php/li01/oai":
+            return _FakeResponse(status_code=429, content=b"")
+        raise AssertionError(f"unexpected endpoint in test: {url}")
+
+    monkeypatch.setattr("thaicite.adapters.thaijo.requests.get", _fake_get)
+
+    adapter = ThaiJOAdapter(
+        endpoint_bases=[
+            "https://example.invalid/index.php/index/oai",
+            "https://example.invalid/index.php/li01/oai",
+        ],
+        min_request_interval_s=0,
+    )
+    result = adapter.search("communication medical")
+    assert isinstance(result, AdapterError)
+    # RATE_LIMITED outranks the plain PARSER_ERROR from the 404'd endpoint.
+    assert result.state == VerificationState.RATE_LIMITED
+
+
+def test_thaijo_default_endpoint_bases_include_aggregator_and_category_guesses():
+    adapter = ThaiJOAdapter(min_request_interval_s=0)
+    assert adapter.endpoint_bases[0] == "https://www.tci-thaijo.org/index.php/index/oai"
+    assert "https://www.tci-thaijo.org/index.php/li01/oai" in adapter.endpoint_bases
+    assert "https://www.tci-thaijo.org/index.php/so20/oai" in adapter.endpoint_bases
+    assert "https://www.tci-thaijo.org/index.php/he05/oai" in adapter.endpoint_bases
 
 
 # =============================================================================

@@ -19,7 +19,14 @@ from __future__ import annotations
 from thaicite.adapters.base import RawRecord
 from thaicite.adapters.openalex import OpenAlexAdapter
 from thaicite.core.engine import resolve_citations
-from thaicite.core.models import CanonicalWork, ContextContract, Decision, RelationLabel, freeze_context
+from thaicite.core.models import (
+    CanonicalWork,
+    ContextContract,
+    Decision,
+    RelationLabel,
+    VerificationState,
+    freeze_context,
+)
 from thaicite.evidence.relation import classify_relation
 from thaicite.evidence.verifier import gate_admission_decision, verify
 
@@ -216,7 +223,7 @@ def test_resolve_citations_returns_cite_uses_and_keeps_existing_keys():
         queries=["AI tutoring student engagement time on task"],
         adapters=[adapter],
     )
-    assert set(result.keys()) == {"verified", "rejected", "not_found_queries", "cite_uses"}
+    assert set(result.keys()) == {"verified", "rejected", "held", "not_found_queries", "cite_uses"}
     assert len(result["cite_uses"]) == 1
     cite_use = result["cite_uses"][0]
     assert cite_use.decision in Decision.ALL
@@ -262,3 +269,57 @@ def test_resolve_citations_same_work_different_claims_can_diverge():
     # Same work, same evidence, opposite intended use -> opposite decision.
     assert support_use.decision == Decision.REJECT
     assert challenge_use.decision == Decision.ADMIT
+
+    # -------------------------------------------------------------------
+    # Regression (2026-09-20): a work that reaches VerificationState.VERIFIED
+    # (G1-G7 identity/existence passed) but whose CiteUse.decision is REJECT
+    # must NEVER appear in the public `verified` list -- before the fix,
+    # `verified` was built straight from `work.state == VERIFIED` and never
+    # checked `CiteUse.decision`, so this exact case (support_result above)
+    # would incorrectly land in `verified` even though its own decision is
+    # REJECT. It must instead show up in `rejected` (or `held`), and its
+    # true decision must always be recoverable from `cite_uses`.
+    assert support_result["verified"] == []
+    assert len(challenge_result["verified"]) == 1
+    admission_rejected = [
+        v for v in support_result["rejected"].values() if v.get("decision") == Decision.REJECT
+    ]
+    assert len(admission_rejected) == 1
+    assert admission_rejected[0]["state"] == VerificationState.VERIFIED
+
+
+def test_resolve_citations_hold_decision_never_leaks_into_verified():
+    """A VERIFIED work whose relation is UNCLEAR/CONTEXT_ONLY (decision ==
+    HOLD, e.g. genuinely thin/ambiguous evidence) must not appear in
+    `verified` either -- it goes to the new `held` bucket, still fully
+    inspectable via `cite_uses`, and never silently mixed into "safe to
+    cite" output."""
+    work_json = _openalex_work(
+        work_id="W6",
+        title="AI tutoring and student time on task in classrooms",
+        authors=["Pat Lee"],
+        year=2023,
+        doi="10.1/w6",
+        # Deliberately thin/off-topic abstract relative to the claim below,
+        # so classify_relation() returns UNCLEAR/CONTEXT_ONLY (no negation,
+        # not enough shared directional signal either).
+        abstract="A brief note on classroom scheduling logistics for staff.",
+    )
+    adapter = _StubAdapter([work_json])
+    contract = freeze_context(
+        claim="AI tutoring and student time on task in classrooms",
+        intended_relation=RelationLabel.SUPPORTS,
+    )
+    result = resolve_citations(
+        context="",
+        queries=["AI tutoring and student time on task in classrooms"],
+        adapters=[adapter],
+        context_contract=contract,
+    )
+    cite_use = result["cite_uses"][0]
+    assert cite_use.decision == Decision.HOLD
+    assert result["verified"] == []
+    assert len(result["held"]) == 1
+    held_entry = next(iter(result["held"].values()))
+    assert held_entry["decision"] == Decision.HOLD
+    assert held_entry["state"] == VerificationState.VERIFIED

@@ -48,6 +48,7 @@ import re
 from difflib import SequenceMatcher
 
 from thaicite.core.models import CanonicalWork, Decision, RelationLabel, VerificationState
+from thaicite.normalize.tokenize import tokenize as _shared_tokenize
 from thaicite.resolve.identity import bibliographic_exact_match, exact_identifier_match
 
 # Common, low-information words that must never be enough on their own to
@@ -65,7 +66,12 @@ _STOPWORDS = {
 
 
 def _keywords(text: str) -> set[str]:
-    tokens = re.findall(r"[a-zA-Z0-9฀-๿]+", text.lower())
+    # Tokenization itself (English regex vs. real Thai word segmentation)
+    # is delegated to the shared helper in normalize/tokenize.py -- see its
+    # module docstring for why the plain regex alone silently collapses an
+    # unspaced Thai sentence into one token. Everything below (min length,
+    # stopwords) is unchanged.
+    tokens = _shared_tokenize(text)
     return {t for t in tokens if len(t) > 2 and t not in _STOPWORDS}
 
 
@@ -218,9 +224,16 @@ def gate_g6b_context_relevance_signal(work: CanonicalWork, context: str) -> tupl
     """Non-gating informational signal only -- kept from the pre-fix G6 for
     display/debugging value, but it NEVER substitutes for
     `gate_g6_identity_match` and never affects work.state on its own; it is
-    not part of the `all(...)` check in `verify()`. Free-text context can
-    legitimately share vocabulary with an unrelated work, so this alone must
-    never be read as "this is the cited work."
+    not part of the `all(...)` check in `verify()` when `mode="identity"`
+    (the default -- see `verify()`). Free-text context can legitimately
+    share vocabulary with an unrelated work, so this alone must never be
+    read as "this is the cited work" under identity mode.
+
+    Under `mode="discovery"` this SAME signal is the basis (strengthened by
+    `gate_g6_discovery_relevance` below) for an actual gate -- discovery is
+    answering a different question ("is this real, on-topic work relevant
+    to this broad context?"), where topical overlap is exactly the right
+    signal, not a weak substitute for one.
     """
     if not context or not context.strip():
         return True, []
@@ -232,35 +245,169 @@ def gate_g6b_context_relevance_signal(work: CanonicalWork, context: str) -> tupl
     return (len(matched) > 0, matched)
 
 
+# Same "a single shared generic word is never enough" floor as
+# gate_g6_identity_match's `_MIN_SHARED_FOR_DIRECTIONAL`-style threshold,
+# applied to discovery-mode topical relevance instead of citation identity.
+_MIN_SHARED_FOR_DISCOVERY_RELEVANCE = 2
+
+# Bridge signal ONLY for discovery-mode relevance (never used by G6 identity
+# matching, never used by classify_relation): `_keywords()`'s word-boundary
+# regex treats an unspaced run of Thai script as ONE token (Thai does not
+# use inter-word spaces the way English does), so two genuinely on-topic
+# Thai sentences that happen to be written without internal spaces (a real,
+# common case -- e.g. a discovery context typed as one unbroken phrase) can
+# share zero whole-run tokens even though they share real vocabulary. A
+# proper Thai word segmenter is a separate, sibling fix (see
+# evidence/relation.py's own module docstring / this repo's Thai-tokenizer
+# workstream) that this gate does not attempt to duplicate; in the
+# meantime, this character n-gram overlap is a scoped fallback SIGNAL, used
+# ONLY here, that still requires a real minimum shared-substring count (not
+# a single coincidental short match) before counting as relevant.
+_THAI_NGRAM_LEN = 4
+_MIN_SHARED_THAI_NGRAMS = 3
+_THAI_SCRIPT_RE = re.compile(r"[฀-๿]")
+
+
+def _thai_char_ngrams(text: str, n: int = _THAI_NGRAM_LEN) -> set[str]:
+    thai_only = "".join(ch for ch in (text or "") if _THAI_SCRIPT_RE.match(ch))
+    if len(thai_only) < n:
+        return set()
+    return {thai_only[i : i + n] for i in range(len(thai_only) - n + 1)}
+
+
+def _thai_ngram_overlap(context: str, doc_text: str) -> set[str]:
+    ctx_ngrams = _thai_char_ngrams(context)
+    doc_ngrams = _thai_char_ngrams(doc_text)
+    return ctx_ngrams & doc_ngrams
+
+
+def gate_g6_discovery_relevance(work: CanonicalWork, context: str) -> tuple[bool, dict]:
+    """DISCOVERY-MODE relevance gate (`verify(..., mode="discovery")` /
+    `core.engine.discover_citations()`), used IN PLACE OF
+    `gate_g6_identity_match` -- never alongside it as an additional
+    requirement, and NEVER used by `verify_cite()`'s identity path.
+
+    Answers "is this real candidate topically relevant to this broad
+    discovery CONTEXT?" -- not "is this candidate bibliographically the
+    SAME work as this exact citation string?" (that is
+    `gate_g6_identity_match`'s job, for `verify_cite()`'s identity path).
+    Built on the same topical-overlap signal
+    `gate_g6b_context_relevance_signal` already computes for informational
+    display purposes in identity mode; here that signal is strengthened
+    slightly (at least 2 shared non-stopword keywords, matching G6's own
+    "one generic shared word is never sufficient" floor) and actually
+    gates `work.state` when discovery mode is active.
+
+    A context with fewer than 2 real (non-stopword) keywords of its own
+    (e.g. a two-word topic phrase) cannot demand 2 shared keywords back --
+    a single real shared keyword is accepted in that case, since discovery
+    is meant to be lenient about bibliographic IDENTITY, not about being
+    entirely unrelated to the topic.
+
+    This function reuses whatever tokenization `_keywords()`/
+    `gate_g6b_context_relevance_signal()` currently implement (including
+    any Thai-segmentation improvements made elsewhere in this module) --
+    it adds no tokenization logic of its own.
+    """
+    signal, matched = gate_g6b_context_relevance_signal(work, context)
+    ctx_kw = _keywords(context or "")
+    debug = {
+        "matched_context_keywords": matched,
+        "context_keyword_count": len(ctx_kw),
+    }
+    if not context or not context.strip():
+        debug["reason"] = "no_context_to_compare_against"
+        return False, debug
+
+    required = (
+        _MIN_SHARED_FOR_DISCOVERY_RELEVANCE
+        if len(ctx_kw) >= _MIN_SHARED_FOR_DISCOVERY_RELEVANCE
+        else 1
+    )
+    passed = len(matched) >= required
+    debug["reason"] = (
+        "sufficient_topical_overlap" if passed else "insufficient_topical_overlap"
+    )
+    debug["required_shared_keywords"] = required
+
+    if not passed:
+        # Thai n-gram bridge fallback (see module comment above
+        # `_THAI_NGRAM_LEN`) -- only consulted when the word-token check
+        # above did not already pass, and only ever used to ADD relevance
+        # evidence, never to subtract it.
+        primary = work.primary
+        doc_text = " ".join(filter(None, [primary.title, primary.abstract or ""]))
+        shared_ngrams = _thai_ngram_overlap(context, doc_text)
+        debug["shared_thai_ngrams"] = len(shared_ngrams)
+        if len(shared_ngrams) >= _MIN_SHARED_THAI_NGRAMS:
+            passed = True
+            debug["reason"] = "sufficient_thai_ngram_overlap"
+
+    return passed, debug
+
+
 def gate_g7_no_conflict(work: CanonicalWork) -> bool:
     return work.state != VerificationState.CONFLICT and not work.conflicts
 
 
+# `verify()`/`gate_admission_decision()` mode tags. IDENTITY is the default
+# and the ONLY mode `verify_cite()` (mcp_server.py) ever uses -- a caller
+# supplying an actual specific citation string to check candidate identity
+# against. DISCOVERY is used ONLY by `core.engine.discover_citations()`
+# (find_cites()/`thaicite find`'s broad-topic path) and must never be the
+# default, so a caller that forgets to pass `mode` explicitly always gets
+# the strict, pre-existing identity-matching behavior unchanged.
+VERIFY_MODE_IDENTITY = "identity"
+VERIFY_MODE_DISCOVERY = "discovery"
+VERIFY_MODES = frozenset({VERIFY_MODE_IDENTITY, VERIFY_MODE_DISCOVERY})
+
+
 def verify(
-    work: CanonicalWork, context: str = "", query: str = ""
+    work: CanonicalWork,
+    context: str = "",
+    query: str = "",
+    mode: str = VERIFY_MODE_IDENTITY,
 ) -> tuple[CanonicalWork, list[str]]:
     """Run all gates against `work`. Returns (work, context_matched_keywords).
 
     `query` is the actual citation string being verified (what the caller
-    is trying to confirm) -- this is what the REQUIRED G6 identity gate
-    checks the candidate against. `context` is free-text surrounding prose
-    and is used only for the non-gating G6b informational signal.
+    is trying to confirm) -- under `mode="identity"` (the default,
+    unchanged from before) this is what the REQUIRED G6 identity gate
+    checks the candidate against, and `context` is free-text surrounding
+    prose used only for the non-gating G6b informational signal.
 
-    On all-pass, sets work.state = VERIFIED. On any failure, sets
-    work.state = REJECTED (unless it was already CONFLICT, which is a more
-    specific and more informative state -- CONFLICT is left as-is so the
-    caller can see *why* it was rejected). `work.gate_results` always
-    records the per-gate pass/fail so a caller never has to guess which
-    gate blocked verification.
+    Under `mode="discovery"`, the REQUIRED gate in G6's slot is
+    `gate_g6_discovery_relevance(work, context)` instead --
+    `gate_g6_identity_match` is still computed and recorded (in
+    `work.gate_results["G6_identity_match"]` and `work.g6_identity_debug`)
+    for transparency/debugging, but it does NOT gate `work.state` in this
+    mode; a real, on-topic candidate is never rejected here just because
+    its title does not share 2+ literal tokens with a broad topic phrase
+    that was never meant to BE a citation string. See module docstring and
+    `core.engine.discover_citations()`.
+
+    On all-pass (for the active mode's required gate set), sets
+    work.state = VERIFIED. On any failure, sets work.state = REJECTED
+    (unless it was already CONFLICT, which is a more specific and more
+    informative state -- CONFLICT is left as-is so the caller can see *why*
+    it was rejected). `work.gate_results` always records the per-gate
+    pass/fail so a caller never has to guess which gate blocked
+    verification.
     """
+    if mode not in VERIFY_MODES:
+        raise ValueError(f"Unknown verify() mode: {mode!r}, expected one of {sorted(VERIFY_MODES)}")
+
     g1 = gate_g1_source_exists(work)
     g2 = gate_g2_identity_via_real_id(work)
     g3 = gate_g3_metadata_consistent(work)
     g4 = gate_g4_resolvable_source(work)
     g5 = gate_g5_metadata_fetched(work)
-    g6, g6_debug = gate_g6_identity_match(work, query)
+    g6_identity, g6_identity_debug = gate_g6_identity_match(work, query)
     g6b_signal, matched_keywords = gate_g6b_context_relevance_signal(work, context)
+    g6_discovery, g6_discovery_debug = gate_g6_discovery_relevance(work, context)
     g7 = gate_g7_no_conflict(work)
+
+    g6_required = g6_discovery if mode == VERIFY_MODE_DISCOVERY else g6_identity
 
     work.gate_results = {
         "G1_source_exists": g1,
@@ -268,19 +415,31 @@ def verify(
         "G3_metadata_consistent": g3,
         "G4_resolvable_source": g4,
         "G5_metadata_fetched": g5,
-        "G6_identity_match": g6,
+        # Identity check: REQUIRED and gating in identity mode; recorded
+        # for transparency only (never gates work.state) in discovery mode.
+        "G6_identity_match": g6_identity,
+        # Topical-relevance check: REQUIRED and gating in discovery mode
+        # only; recorded for transparency in identity mode (where G6b above
+        # already serves this informational purpose).
+        "G6_discovery_relevance": g6_discovery,
         "G6b_context_relevance_signal_nongating": g6b_signal,
         "G7_no_conflict": g7,
     }
-    # Debug evidence for the identity check (title-overlap ratios, shared
-    # tokens, author-surname match) is kept separately from gate_results --
-    # gate_results stays a pure bool map so callers/tests iterating it for
-    # pass/fail never trip over a non-bool value.
-    work.g6_identity_debug = g6_debug
+    # Debug evidence for both G6 variants (title-overlap ratios, shared
+    # tokens, author-surname match / matched context keywords) is kept
+    # separately from gate_results -- gate_results stays a pure bool map so
+    # callers/tests iterating it for pass/fail never trip over a non-bool
+    # value.
+    work.g6_identity_debug = {
+        "mode": mode,
+        "identity": g6_identity_debug,
+        "discovery_relevance": g6_discovery_debug,
+    }
 
     # G6b (context relevance) is deliberately NOT in this all(...) check --
     # it is informational only, per the module docstring and post-mortem.
-    if all((g1, g2, g3, g4, g5, g6, g7)):
+    # Only the mode-appropriate G6 variant (g6_required) gates work.state.
+    if all((g1, g2, g3, g4, g5, g6_required, g7)):
         work.state = VerificationState.VERIFIED
     elif work.state != VerificationState.CONFLICT:
         work.state = VerificationState.REJECTED
@@ -292,6 +451,7 @@ def gate_admission_decision(
     work: CanonicalWork,
     relation: str,
     intended_relation: str = RelationLabel.SUPPORTS,
+    mode: str = VERIFY_MODE_IDENTITY,
 ) -> tuple[str, dict]:
     """Deterministic 3-way ADMIT/REJECT/HOLD gate (ARCHITECTURE.md SS89,
     SS98) -- an additional outcome layer on top of `verify()`'s existing
@@ -353,10 +513,17 @@ def gate_admission_decision(
         return Decision.HOLD, debug
 
     if work.state == VerificationState.REJECTED:
-        g6_passed = work.gate_results.get("G6_identity_match")
+        # Which G6 variant actually gated this work into REJECTED depends
+        # on `mode` -- see `verify()`. Using the wrong one here would read
+        # a purely-informational gate (never gating in this mode) as if it
+        # were the reason for the real mismatch.
+        mismatch_gate = (
+            "G6_discovery_relevance" if mode == VERIFY_MODE_DISCOVERY else "G6_identity_match"
+        )
+        g6_passed = work.gate_results.get(mismatch_gate)
         g5_passed = work.gate_results.get("G5_metadata_fetched")
         if g6_passed is False:
-            debug["reason"] = "G6_identity_match_failed_real_mismatch"
+            debug["reason"] = f"{mismatch_gate}_failed_real_mismatch"
             return Decision.REJECT, debug
         if g5_passed is False:
             debug["reason"] = "G5_metadata_not_fetched_insufficient_access"

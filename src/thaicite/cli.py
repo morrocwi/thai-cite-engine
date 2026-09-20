@@ -24,7 +24,7 @@ from thaicite.adapters.crossref import CrossrefAdapter
 from thaicite.adapters.openalex import OpenAlexAdapter
 from thaicite.adapters.pubmed import PubMedAdapter
 from thaicite.adapters.thaijo import ThaiJOAdapter
-from thaicite.core.engine import resolve_citations
+from thaicite.core.engine import discover_citations
 from thaicite.core.models import Citation
 from thaicite.routing.router import route
 
@@ -59,6 +59,7 @@ def _format_citation(citation: Citation, index: int) -> str:
 
 def _print_debug_detail(result: dict[str, Any]) -> None:
     rejected = result.get("rejected") or {}
+    held = result.get("held") or {}
     not_found = result.get("not_found_queries") or {}
     cite_uses = result.get("cite_uses") or []
 
@@ -66,6 +67,16 @@ def _print_debug_detail(result: dict[str, Any]) -> None:
     if not rejected:
         print("(none)")
     for label, detail in rejected.items():
+        print(f"- {label}: {detail.get('reason')} (state={detail.get('state')})")
+        if detail.get("title"):
+            print(f"    title: {detail['title']}")
+        if detail.get("query"):
+            print(f"    query: {detail['query']}")
+
+    print("\n--- debug: held (identity confirmed, not admitted) ---")
+    if not held:
+        print("(none)")
+    for label, detail in held.items():
         print(f"- {label}: {detail.get('reason')} (state={detail.get('state')})")
         if detail.get("title"):
             print(f"    title: {detail['title']}")
@@ -95,15 +106,21 @@ def _print_debug_detail(result: dict[str, Any]) -> None:
 def find_citations(context: str, max_results: int, debug: bool = False) -> int:
     """Run one `find` request end-to-end and print the results.
 
+    Discovery mode (`core.engine.discover_citations()`): searches a small,
+    bounded Support x Challenge query family generated from `context`
+    (`routing.query_planner.plan_queries`), fuses/dedupes across it, and
+    judges relevance by topical overlap rather than requiring the broad
+    `context` string to bibliographically match a candidate's title --
+    see `discover_citations()`'s docstring.
+
     Returns the process exit code (0 on success, even when no citations
     were found -- an empty result is a legitimate outcome, not a failure).
     """
     adapters = _default_adapters()
     route_decision = route(context=context, query=context, available_adapters=adapters)
 
-    result = resolve_citations(
+    result = discover_citations(
         context=context,
-        queries=[context],
         adapters=route_decision.adapters,
     )
     route_decision.update_track_status(result)
@@ -112,6 +129,8 @@ def find_citations(context: str, max_results: int, debug: bool = False) -> int:
 
     print(f"domain: {route_decision.domain}")
     print(f"track_status: {route_decision.track_status}")
+    if debug:
+        print(f"query_family: {result.get('query_family')}")
     print()
 
     if not verified:

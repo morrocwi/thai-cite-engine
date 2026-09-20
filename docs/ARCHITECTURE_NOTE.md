@@ -33,12 +33,23 @@ after passing all of gates G1–G7 (`evidence/verifier.py`), never before.
   and `REJECT`/`HOLD` for another.
 - **3-way `ADMIT`/`REJECT`/`HOLD` gate** (`evidence/verifier.py`'s
   `gate_admission_decision`) layered on top of the unchanged G1–G7 state
-  machine — never a replacement for it.
+  machine — never a replacement for it. **As of round 2 (below), this is now
+  the gate that actually controls public output** — `core/engine.py` filters
+  the `verified`/`citations` list strictly by `decision == ADMIT`; a `HOLD`
+  or `REJECT` decision can no longer leak into "safe to cite" output.
 - **Relation classification** (`evidence/relation.py`'s `classify_relation`)
   — a deterministic v1 heuristic (negation/contrast-marker detection), not a
   claim of solved natural-language entailment; it returns a label only and
   never sets a decision itself (see `evidence/verifier.py` for the
-  decision logic).
+  decision logic). Now uses real Thai word segmentation (see round 2 below).
+- **Discovery mode vs. identity mode** (`core/engine.py`'s
+  `discover_citations()` vs. `resolve_citations()`) — `find_cites`/CLI `find`
+  use discovery mode (relevance-gated, genuinely calls
+  `routing/query_planner.py::plan_queries()` for a support+challenge query
+  family); `verify_cite` uses identity mode (strict candidate-vs-citation
+  bibliographic match). These are deliberately different gates for
+  deliberately different questions — see round 2 below for why this split
+  exists.
 - **Thai-first Source Router** (`routing/router.py`) — ThaiJO is ordered
   first for `THAI`/`THAI_HEALTH`/`GENERAL` domains (included by default even
   with no positive Thai signal, per design intent), and is the one deliberate
@@ -47,11 +58,16 @@ after passing all of gates G1–G7 (`evidence/verifier.py`), never before.
   degraded rather than hiding a partial failure.
 - **Support × Challenge query planner** (`routing/query_planner.py`) —
   deterministic query-family generation; a challenge query is never a literal
-  negation of its paired support query.
+  negation of its paired support query. Genuinely wired into discovery mode
+  as of round 2.
+- **Real Thai tokenization** (`normalize/tokenize.py`, round 2) — uses
+  `pythainlp` for Thai/mixed text (a **required** dependency, see
+  `pyproject.toml`); pure non-Thai text keeps the original regex behavior
+  unchanged.
 - **CLI** (`thaicite find --context "..." [--debug]`) and an **MCP server**
   (`mcp_server.py`, genuinely functional in this environment, exposing
   `find_cites`/`verify_cite`).
-- **79 offline tests passing** (`PYTHONPATH=src python3 -m pytest tests/ -q`),
+- **106 offline tests passing** (`PYTHONPATH=src python3 -m pytest tests/ -q`),
   none requiring live network access.
 
 Contact-email parameters (`THAICITE_CONTACT_EMAIL`, optional
@@ -83,12 +99,25 @@ the raw `similarity_score()` helper; citation formatting/output-style rendering 
 Source Safety / retraction checking; and the TCITE canonical Work ID (deliberately paused,
 see ARCHITECTURE.md §59).
 
+## Round 2 (same day): external adversarial Thai-language test found and fixed 4 more severe bugs
+
+A real external adversarial test (Thai query, real ThaiJO ground-truth papers on Islamic
+family law) found the system FAILED to surface any of 4 genuinely relevant, real papers.
+Root-caused to 4 distinct, independently-verified bugs — the `VERIFIED`/`ADMIT` semantic
+leak (public output wasn't actually filtered by the ADMIT/REJECT/HOLD gate), `find_cites()`
+misusing the strict identity gate for broad discovery, a Thai tokenizer that collapsed whole
+unspaced Thai sentences into one token, and a ThaiJO adapter capped at 50 records with no
+real pagination. All 4 fixed and covered by new regression tests using the exact real
+ground-truth titles. Full detail, including what's still honestly unresolved (ThaiJO endpoint
+reachability, the still-unimplemented multi-concept Query Planner from ARCHITECTURE.md §9):
+**`docs/KNOWN_ISSUES.md`**.
+
 ## Validation status — read before trusting this build
 
-The G6 identity-match fix and the whole Citation-Use/Router/adapter expansion above are
-**unit-tested (79/79 passing) but not yet confirmed by a full live 100-scenario adversarial
-re-run** — OpenAlex rate-limiting has kept that re-run incomplete (30 PASS / 0 FAIL / 70
-INCONCLUSIVE as of the last attempt). Per this project's own honesty tier
-(`ARCHITECTURE.md` §72's `Dr` label): this is a plausible, carefully-tested architecture,
-not yet a "proven better than baseline" result. See `docs/KNOWN_ISSUES.md` and
+Both rounds of fixes above are **unit-tested (106/106 passing) but not yet confirmed by a
+full live 100-scenario adversarial re-run** — OpenAlex rate-limiting has kept that re-run
+incomplete since round 1 (30 PASS / 0 FAIL / 70 INCONCLUSIVE as of the last attempt), and
+round 2 has not been live-tested at that scale at all yet. Per this project's own honesty
+tier (`ARCHITECTURE.md` §72's `Dr` label): this is a plausible, carefully-tested
+architecture, not yet a "proven better than baseline" result. See `docs/KNOWN_ISSUES.md` and
 `tests/golden/` for the full trail.

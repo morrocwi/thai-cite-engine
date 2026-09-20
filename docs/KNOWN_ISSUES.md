@@ -82,6 +82,68 @@ the original 100-scenario run:
   adversarial test category (e.g. `THAI_TITLE_TRANSLATION_MISMATCH`) in the next 100-scenario
   run, rather than discovered the same way the original G6 defect was.
 
+## Round 2: external adversarial Thai-language test found 4 more severe bugs (2026-09-20, same day)
+
+An external adversarial test against the live pushed repo, using the real Thai query
+"หางานวิจัยไทยเกี่ยวกับกฎหมายอิสลามและผู้หญิง" against real ThaiJO ground-truth papers
+(rights/duties of a wife under Islamic law, a wife's right to divorce, a comparative study of
+mahr/dower, and a 2025 paper on female Muslim mediators), found **FAIL on all 4** — the
+system existed, but genuinely could not surface them. Four distinct, confirmed-by-direct-
+code-reading bugs were found and fixed in the same session:
+
+1. **`VERIFIED`/`ADMIT` semantic leak** — `core/engine.py` built the public `verified` list
+   from `work.state == VerificationState.VERIFIED` only, never checking
+   `CiteUse.decision == Decision.ADMIT`. A `HOLD`- or `REJECT`-decision work could still
+   appear as "safe to cite," directly contradicting this project's own design (README/
+   ARCHITECTURE.md: "user sees only ADMIT"). **Fixed**: `verified` is now filtered strictly
+   by `decision == ADMIT`; `HOLD` results go to a new `held` bucket; `REJECT` results merge
+   into `rejected` tagged `admission_reject:`. `mcp_server.verify_cite()` now exposes both
+   `identity_verified` (old G1–G7-only meaning) and `verified` (now strictly ADMIT) as
+   separate, clearly-named fields.
+2. **`find_cites()`/CLI misused the identity gate for discovery** — both fed a broad topic
+   context into the same strict candidate-vs-citation identity check (`gate_g6_identity_match`)
+   `verify_cite()` uses for a specific citation string, so a real, on-topic paper was rejected
+   for not sharing enough literal tokens with a topic phrase. `routing/query_planner.py`'s
+   support/challenge query generation was built but had zero call sites anywhere. **Fixed**:
+   new `discover_citations()` (used by `find_cites`/CLI `find`) runs in a discovery mode with
+   a relevance-only gate (`gate_g6_discovery_relevance`) instead of the strict identity gate,
+   and genuinely calls `plan_queries()` to search a support+challenge query family, fusing
+   results before relevance/admission evaluation. `verify_cite()`'s identity-mode path is
+   completely unchanged.
+3. **Thai tokenizer collapsed whole titles into one token** — `re.findall(r"[a-zA-Z0-9฀-๿]+", …)`
+   has no Thai word-boundary awareness, so an unspaced Thai sentence became a single token,
+   making token-overlap comparison return zero shared tokens for genuinely matching Thai
+   citations (worse than the previously-known Thai↔English title-mismatch risk — this broke
+   Thai↔Thai matching too). **Fixed**: new `src/thaicite/normalize/tokenize.py` uses
+   `pythainlp.tokenize.word_tokenize` for Thai/mixed text (confirmed: splits
+   "สิทธิและหน้าที่ของภริยาตามกฎหมายอิสลาม" into 7 real words), with an unchanged regex path for
+   pure non-Thai text. **`pythainlp` is now a required dependency in `pyproject.toml`** (it
+   was initially missing after the fix — a fresh install would have silently regressed to the
+   broken behavior; caught by the final review and corrected same-day).
+4. **ThaiJO adapter: single page, 50-record cap** — no `resumptionToken` follow-up loop
+   despite the docstring implying paging support. **Fixed**: real pagination (follows
+   `resumptionToken` until empty, default ceiling raised to 750, configurable), plus a
+   multi-endpoint fan-out across the aggregator URL and a guessed set of per-category OAI
+   endpoints (`sc01, li01–05, ph01–05, he01–05, so01–20`) — one endpoint failing never blocks
+   the others. **Endpoint reachability is still unconfirmed**: this round's single
+   `?verb=Identify` probe against the aggregator URL returned HTTP 404 (confirmed again); the
+   per-category URLs were deliberately not probed (to avoid firing a burst of untested
+   requests at a host with unknown rate-limit/ban behavior) and remain genuinely unverified
+   either way.
+
+New regression tests: `tests/test_discovery_mode.py`, `tests/test_thai_ground_truth_regression.py`
+(the latter uses the exact 4 real ground-truth titles above as fixtures). Full suite:
+**106/106 passing** (`PYTHONPATH=src python3 -m pytest tests/ -q`), independently re-run and
+confirmed by a fresh adversarial review after this round (which found only the two
+documentation/packaging gaps this update itself addresses — no correctness issues in the 4
+fixes themselves).
+
+**Still not done**: a full live 100-scenario adversarial re-run reflecting all of round 1 +
+round 2's fixes together (OpenAlex rate-limiting and the unconfirmed ThaiJO endpoint both
+remain open); the multi-concept Query Planner from ARCHITECTURE.md §9 (topic/geography/
+population decomposition with synonym expansion) is still not implemented — `query_planner.py`
+only does single-claim support/challenge framing, not multi-concept decomposition.
+
 ## References
 
 - Original findings (pre-fix): `tests/golden/CONCEPT_VALIDATION_REPORT.md`

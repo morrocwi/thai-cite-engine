@@ -6,6 +6,7 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.28",
+    "pythainlp>=5.0",
 ]
 
 [project.scripts]

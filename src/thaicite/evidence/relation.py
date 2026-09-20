@@ -20,8 +20,9 @@ influence `work.state` or any gate boolean.
 
 from __future__ import annotations
 
-import re
 from typing import Literal
+
+from thaicite.normalize.tokenize import tokenize as _shared_tokenize
 
 RelationValue = Literal["SUPPORTS", "CHALLENGES", "CONTEXT_ONLY", "UNCLEAR"]
 
@@ -67,7 +68,10 @@ _PROXIMITY_WINDOW = 8
 
 
 def _tokenize(text: str) -> list[str]:
-    return re.findall(r"[a-zA-Z0-9฀-๿]+", (text or "").lower())
+    # Delegates to the shared Thai-aware tokenizer (normalize/tokenize.py)
+    # -- see its module docstring for why the bare regex this used to be
+    # collapses an unspaced Thai sentence into a single token.
+    return _shared_tokenize(text)
 
 
 def _keywords(tokens: list[str]) -> set[str]:
