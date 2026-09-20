@@ -1,0 +1,19 @@
+[project]
+name = "thaicite"
+version = "0.1.0"
+description = "Thai Cite Engine -- v0.1 concept-validation prototype (hallucination-firewall core)"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.scripts]
+thaicite = "thaicite.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

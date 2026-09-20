@@ -1,0 +1,846 @@
+{
+  "generated_from": "tests/run_adversarial_suite.py",
+  "fixtures": "tests/fixtures/adversarial_100.json",
+  "total_scenarios": 100,
+  "elapsed_seconds": 13.1,
+  "counts_by_verdict": {
+    "INCONCLUSIVE": 70,
+    "PASS": 30
+  },
+  "counts_by_category": {
+    "FABRICATED_WORK": {
+      "INCONCLUSIVE": 15
+    },
+    "POSITIVE_CONTROL": {
+      "INCONCLUSIVE": 15
+    },
+    "SEMANTIC_TRAP": {
+      "INCONCLUSIVE": 10
+    },
+    "METADATA_CONFLICT": {
+      "PASS": 8,
+      "INCONCLUSIVE": 2
+    },
+    "ERROR_STATE": {
+      "PASS": 8,
+      "INCONCLUSIVE": 2
+    },
+    "THAI_SPECIFIC": {
+      "PASS": 4,
+      "INCONCLUSIVE": 6
+    },
+    "DUPLICATE_ACROSS_SOURCE": {
+      "INCONCLUSIVE": 10
+    },
+    "BOUNDARY_EDGE": {
+      "INCONCLUSIVE": 3,
+      "PASS": 7
+    },
+    "OTHER": {
+      "PASS": 3,
+      "INCONCLUSIVE": 7
+    }
+  },
+  "scenarios": [
+    {
+      "scenario_id": "S001",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S002",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S003",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S004",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S005",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S006",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S007",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S008",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S009",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S010",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S011",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S012",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S013",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S014",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S015",
+      "category": "FABRICATED_WORK",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S016",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S017",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S018",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S019",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S020",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S021",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S022",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S023",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S024",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S025",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S026",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S027",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S028",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S029",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S030",
+      "category": "POSITIVE_CONTROL",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S031",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S032",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S033",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S034",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S035",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S036",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S037",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S038",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S039",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S040",
+      "category": "SEMANTIC_TRAP",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S041",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "AMBIGUOUS_BY_DESIGN",
+      "verdict": "PASS",
+      "reason": "all 5 synthetic resolve/conflicts.py + resolve/identity.py checks passed (year conflict, title conflict, author conflict, author-reorder non-conflict, bibliographic_exact_match requires-all-fields)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S042",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "AMBIGUOUS_BY_DESIGN",
+      "verdict": "PASS",
+      "reason": "all 5 synthetic resolve/conflicts.py + resolve/identity.py checks passed (year conflict, title conflict, author conflict, author-reorder non-conflict, bibliographic_exact_match requires-all-fields)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S043",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "VERIFIED_OR_JUDGE_BY_CODE",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S044",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "NOTE_ONLY",
+      "verdict": "PASS",
+      "reason": "all 5 synthetic resolve/conflicts.py + resolve/identity.py checks passed (year conflict, title conflict, author conflict, author-reorder non-conflict, bibliographic_exact_match requires-all-fields)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S045",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "NOTE_ONLY",
+      "verdict": "PASS",
+      "reason": "all 5 synthetic resolve/conflicts.py + resolve/identity.py checks passed (year conflict, title conflict, author conflict, author-reorder non-conflict, bibliographic_exact_match requires-all-fields)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S046",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "NOTE_ONLY",
+      "verdict": "PASS",
+      "reason": "all 5 synthetic resolve/conflicts.py + resolve/identity.py checks passed (year conflict, title conflict, author conflict, author-reorder non-conflict, bibliographic_exact_match requires-all-fields)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S047",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "NOTE_ONLY",
+      "verdict": "PASS",
+      "reason": "all 5 synthetic resolve/conflicts.py + resolve/identity.py checks passed (year conflict, title conflict, author conflict, author-reorder non-conflict, bibliographic_exact_match requires-all-fields)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S048",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "NOTE_ONLY",
+      "verdict": "PASS",
+      "reason": "all 5 synthetic resolve/conflicts.py + resolve/identity.py checks passed (year conflict, title conflict, author conflict, author-reorder non-conflict, bibliographic_exact_match requires-all-fields)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S049",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "NOTE_ONLY",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S050",
+      "category": "METADATA_CONFLICT",
+      "expected_outcome": "AdapterError_surfaced",
+      "verdict": "PASS",
+      "reason": "query 'Attention Is All You Need Vaswani et al' correctly surfaced PARSER_ERROR distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S051",
+      "category": "ERROR_STATE",
+      "expected_outcome": "RATE_LIMITED",
+      "verdict": "PASS",
+      "reason": "query 'Deep Learning for Thai Named Entity Recognition' correctly surfaced RATE_LIMITED distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S052",
+      "category": "ERROR_STATE",
+      "expected_outcome": "RATE_LIMITED",
+      "verdict": "PASS",
+      "reason": "query 'Transformer-based Thai part-of-speech tagging' correctly surfaced RATE_LIMITED distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S053",
+      "category": "ERROR_STATE",
+      "expected_outcome": "TIMEOUT",
+      "verdict": "PASS",
+      "reason": "query 'Chronic disease burden among elderly populations in rural Thailand' correctly surfaced TIMEOUT distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S054",
+      "category": "ERROR_STATE",
+      "expected_outcome": "TIMEOUT",
+      "verdict": "PASS",
+      "reason": "query 'การศึกษาความชุกของโรคเบาหวานในผู้สูงอายุชนบทภาคอีสาน' correctly surfaced TIMEOUT distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S055",
+      "category": "ERROR_STATE",
+      "expected_outcome": "ACCESS_DENIED",
+      "verdict": "PASS",
+      "reason": "query 'Genomic surveillance of dengue virus serotypes in Southeast Asia' correctly surfaced ACCESS_DENIED distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S056",
+      "category": "ERROR_STATE",
+      "expected_outcome": "ACCESS_DENIED",
+      "verdict": "PASS",
+      "reason": "query 'Novel biomarker panel for early-stage pancreatic cancer detection' correctly surfaced ACCESS_DENIED distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S057",
+      "category": "ERROR_STATE",
+      "expected_outcome": "PARSER_ERROR",
+      "verdict": "PASS",
+      "reason": "query 'Community-based disaster resilience planning in flood-prone Thai provinces' correctly surfaced PARSER_ERROR distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S058",
+      "category": "ERROR_STATE",
+      "expected_outcome": "PARSER_ERROR",
+      "verdict": "PASS",
+      "reason": "query 'COVID-19 & long-term \"brain fog\": a systematic review (2020-2023)' correctly surfaced PARSER_ERROR distinct from NOT_FOUND",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S059",
+      "category": "ERROR_STATE",
+      "expected_outcome": "MIXED_PER_QUERY",
+      "verdict": "INCONCLUSIVE",
+      "reason": "[injected TIMEOUT] query 'Longitudinal cognitive decline trajectories among Thai elderly nursing-home residents' correctly surfaced TIMEOUT distinct from NOT_FOUND | [fabricated] live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S060",
+      "category": "ERROR_STATE",
+      "expected_outcome": "MIXED_PER_QUERY",
+      "verdict": "INCONCLUSIVE",
+      "reason": "[injected RATE_LIMITED] query 'Prevalence of antimicrobial resistance in Thai hospital-acquired infections' correctly surfaced RATE_LIMITED distinct from NOT_FOUND | [real] live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S061",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "VERIFIED_OR_NOT_FOUND_BUT_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S062",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S063",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S064",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "VERIFIED_OR_NOT_FOUND_BUT_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S065",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "VERIFIED_OR_NOT_FOUND_BUT_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S066",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S067",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S068",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S069",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S070",
+      "category": "THAI_SPECIFIC",
+      "expected_outcome": "VERIFIED_OR_NOT_FOUND_BUT_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S071",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S072",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S073",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S074",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S075",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S076",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S077",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S078",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S079",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S080",
+      "category": "DUPLICATE_ACROSS_SOURCE",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S081",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "VERIFIED",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S082",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "EMPTY_RESULT_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "queries=[] produced an empty, valid result (no crash)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S083",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "VERIFIED_OR_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S084",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "NOT_FOUND_OR_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S085",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S086",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S087",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "NOT_FOUND_OR_VALIDATED_ERROR",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S088",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "ValueError_raised",
+      "verdict": "PASS",
+      "reason": "ValueError correctly raised: Scenario query object missing 'text'/'query': {'inject_error': 'TIMEOUT'}",
+      "status": "value_error"
+    },
+    {
+      "scenario_id": "S089",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "ValueError_raised",
+      "verdict": "PASS",
+      "reason": "ValueError correctly raised: inject_error must be one of ['ACCESS_DENIED', 'NOT_FOUND', 'PARSER_ERROR', 'RATE_LIMITED', 'TIMEOUT'], got 'SERVER_ON_FIRE'",
+      "status": "value_error"
+    },
+    {
+      "scenario_id": "S090",
+      "category": "BOUNDARY_EDGE",
+      "expected_outcome": "ValueError_raised",
+      "verdict": "PASS",
+      "reason": "ValueError correctly raised: Unknown/unsupported adapter 'semantic_scholar' for this prototype -- supported: ['openalex']",
+      "status": "value_error"
+    },
+    {
+      "scenario_id": "S091",
+      "category": "OTHER",
+      "expected_outcome": "VERIFIED_BUT_JUDGE_SHOULD_FLAG_RETRACTION",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S092",
+      "category": "OTHER",
+      "expected_outcome": "VERIFIED_OR_NOT_FOUND_BUT_JUDGE_SHOULD_FLAG_QUALITY_GAP",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S093",
+      "category": "OTHER",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S094",
+      "category": "OTHER",
+      "expected_outcome": "BOTH_NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S095",
+      "category": "OTHER",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S096",
+      "category": "OTHER",
+      "expected_outcome": "NOT_FOUND",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S097",
+      "category": "OTHER",
+      "expected_outcome": "PER_QUERY_CORRECTNESS_AT_SCALE",
+      "verdict": "INCONCLUSIVE",
+      "reason": "[injected RATE_LIMITED] OK: query 'Fabricated: Panyathanya, S. (2022). Predictive AI model for Thai stock market using lunar cycles. Journal of Computational Finance Thailand, 6(2), 40-60.' correctly surfaced RATE_LIMITED distinct from NOT_FOUND | [injected TIMEOUT] OK: query 'Ostrom Governing the Commons 1990' correctly surfaced TIMEOUT distinct from NOT_FOUND | [injected ACCESS_DENIED] OK: query 'Sen Development as Freedom 1999' correctly surfaced ACCESS_DENIED distinct from NOT_FOUND | [injected PARSER_ERROR] OK: query 'Rosling Factfulness global health statistics' correctly surfaced PARSER_ERROR distinct from NOT_FOUND | 6 fabricated queries: none leaked into verified | real queries: 0/10 identity-matched in verified; live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S098",
+      "category": "OTHER",
+      "expected_outcome": "DEDUPED_SINGLE_CANONICAL_WORK",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S099",
+      "category": "OTHER",
+      "expected_outcome": "VERIFIED_QUERY_ONLY",
+      "verdict": "INCONCLUSIVE",
+      "reason": "live OpenAlex transport failure (RATE_LIMITED) on every query this scenario needed",
+      "status": "ok"
+    },
+    {
+      "scenario_id": "S100",
+      "category": "OTHER",
+      "expected_outcome": "VERIFIED_OR_NOT_FOUND_BUT_NO_CRASH",
+      "verdict": "PASS",
+      "reason": "ran without crash (criterion met)",
+      "status": "ok"
+    }
+  ]
+}

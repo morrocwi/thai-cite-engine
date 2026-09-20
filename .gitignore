@@ -1,0 +1,27 @@
+# Session-internal handoff notes (never ship to the public repo -- see
+# WF-HANDOFF-BEFORE-WORKFLOW: these keep evolving locally as a real session
+# record and must not be scrubbed/committed).
+docs/HANDOFF_*.md
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+**/*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
