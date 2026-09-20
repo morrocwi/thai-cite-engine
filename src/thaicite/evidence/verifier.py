@@ -48,7 +48,9 @@ import re
 from difflib import SequenceMatcher
 
 from thaicite.core.models import CanonicalWork, Decision, RelationLabel, VerificationState
+from thaicite.evidence.relation import classify_relation
 from thaicite.evidence.statement_type import (
+    ALL_STATEMENT_TYPES,
     FINDING_STATEMENT_TYPES,
     StatementType,
     classify_statement_type,
@@ -664,23 +666,54 @@ def gate_admission_decision(
         debug["reason"] = f"failed_gate(s):{','.join(failed_gates) or 'unknown'}"
         return Decision.REJECT, debug
 
-    # Statement-Type layer (P0 fix, see docstring above): only a passage
-    # that actually reported a finding (RESULT/CONCLUSION) may ever reach
-    # ADMIT, no matter what `relation` says. Checked BEFORE the
-    # relation-label check below, for every state that could otherwise
-    # reach ADMIT -- this only ever narrows the outcome to HOLD, never
+    # Statement-Type layer (P0 fix, see docstring above), the QUALIFIES
+    # layer (round 4), and the directional match/mismatch mapping are all
+    # shared with `check_claim_evidence()` (added for the AI-Reader /
+    # deterministic-Checker role change, see that function's docstring) --
+    # see `_admission_from_resolved_signals()` for the one place this
+    # mapping is implemented, so it is never duplicated between the two
+    # callers.
+    return _admission_from_resolved_signals(
+        work_state=work.state,
+        relation=relation,
+        intended_relation=intended_relation,
+        statement_type=statement_type,
+        debug=debug,
+    )
+
+
+def _admission_from_resolved_signals(
+    work_state: str,
+    relation: str,
+    intended_relation: str,
+    statement_type: StatementType | None,
+    debug: dict,
+) -> tuple[str, dict]:
+    """Shared core of the ADMIT/REJECT/HOLD mapping (ARCHITECTURE.md SS89
+    examples) once a `relation` and (optional) `statement_type` are already
+    resolved -- used by both:
+
+      - `gate_admission_decision()` (full G1-G7 pipeline; called only for a
+        `work_state` that is NOT CONFLICT/an ERROR_STATE/NOT_FOUND/REJECTED
+        -- those are handled by that function itself, before this helper
+        runs, since they need `work.gate_results`, which this helper never
+        sees).
+      - `check_claim_evidence()` (claim<->evidence consistency check only,
+        no `CanonicalWork` -- always calls this with
+        `work_state=VerificationState.VERIFIED`, i.e. "assume identity/
+        existence was already confirmed elsewhere via G1-G7; only decide
+        whether THIS evidence text is admissible for THIS claim" -- see
+        that function's own docstring for why it does not itself run
+        G1-G7).
+
+    Mutates and returns the caller's `debug` dict alongside the decision so
+    both callers share one reason-trail format.
+    """
+    # Statement-Type layer (P0 fix): only a passage that actually reported
+    # a finding (RESULT/CONCLUSION) may ever reach ADMIT, no matter what
+    # `relation` says. This only ever narrows the outcome to HOLD, never
     # widens it, and never fires when `statement_type` was not supplied.
-    if (
-        statement_type is not None
-        and statement_type not in FINDING_STATEMENT_TYPES
-        and work.state
-        not in (
-            VerificationState.CONFLICT,
-            VerificationState.NOT_FOUND,
-            VerificationState.REJECTED,
-            *VerificationState.ERROR_STATES,
-        )
-    ):
+    if statement_type is not None and statement_type not in FINDING_STATEMENT_TYPES:
         debug["reason"] = (
             f"statement_type={statement_type}, no finding reported to evaluate"
         )
@@ -699,7 +732,7 @@ def gate_admission_decision(
         relation in (RelationLabel.SUPPORTS, RelationLabel.CHALLENGES)
     )
 
-    if work.state in (VerificationState.VERIFIED, VerificationState.CONTENT_FETCHED):
+    if work_state in (VerificationState.VERIFIED, VerificationState.CONTENT_FETCHED):
         if not directional_and_clear:
             debug["reason"] = f"relation_{relation}_not_directional"
             return Decision.HOLD, debug
@@ -713,5 +746,227 @@ def gate_admission_decision(
 
     # Any other pipeline-in-progress state (DISCOVERED/IDENTIFIED/
     # METADATA_VERIFIED/CONTEXT_MATCHED) -- not enough has happened yet.
-    debug["reason"] = f"insufficient_pipeline_state:{work.state}"
+    debug["reason"] = f"insufficient_pipeline_state:{work_state}"
     return Decision.HOLD, debug
+
+
+def check_claim_evidence(
+    claim: str,
+    passage: str,
+    ai_statement_type: str | None = None,
+    ai_relation: str | None = None,
+    *,
+    intended_relation: str = RelationLabel.SUPPORTS,
+) -> dict:
+    """AI-Reader-vs-deterministic-Checker consistency gate -- the "Cite
+    Card" transparency record (2026-09-20, ThaiCite role-change fix).
+
+    BACKGROUND (why this function exists, not another heuristic patch):
+    four rounds of pattern-matching fixes to `classify_statement_type()`/
+    `classify_relation()` each found the previous round insufficient --
+    confirming that closed-vocabulary heuristics are the wrong tool for
+    genuinely semantic judgment. The founder-approved fix is a role
+    change, not another patch: ThaiCite is exposed via MCP to be called BY
+    an AI agent, which does the SEMANTIC work (reading passages, judging
+    statement type/relation) as a Scout+Reader role, while ThaiCite itself
+    stays a lightweight, dependency-free deterministic tool. This function
+    is the Gate half of that split: it ALWAYS runs the deterministic
+    checker (`classify_statement_type`/`classify_relation`, unchanged) and
+    treats an AI-proposed judgment as an input to check, never as truth to
+    trust outright.
+
+    Hard constraint honored here (founder decision, explicit, this
+    session): no LLM API call is bundled into this function or anywhere
+    else in `src/thaicite/` -- no `openai`/`anthropic` SDK import, no
+    per-call vendor cost, no API-key requirement. `ai_statement_type`/
+    `ai_relation` are plain string parameters this function CONSUMES; it
+    never calls out to any AI itself.
+
+    AI DISCOVERY CONTRACT (this is what the calling AI agent needs to
+    know -- document it prominently, since this docstring is what that
+    agent reads to know how to use this tool):
+      AI (via the calling agent) MAY propose: a title hint, a DOI/PMID
+      hint, search terms, a passage-relevance guess, its own read of
+      statement type (`ai_statement_type`) or claim/evidence relation
+      (`ai_relation`) for THIS (claim, passage) pair.
+      AI MAY NOT claim, and no tool may accept as truth without
+      independent checking: that a source is VERIFIED/CONFIRMED, that a
+      citation is safe-to-cite, any bibliographic fact not backed by a
+      real adapter record, or an ADMIT decision -- those only ever come
+      from ThaiCite's own deterministic resolve/fetch/gate functions
+      (this one included), never from what the AI asserts about its own
+      proposal.
+
+    Placement: alongside `gate_admission_decision()` in this module,
+    because it reuses that function's exact admission mapping (via the
+    shared `_admission_from_resolved_signals()` helper above) rather than
+    reimplementing it, and because it is one more deterministic Gate
+    function in the same family (G1-G7 existence/identity gates,
+    `gate_admission_decision()`'s directional mapping, and now this
+    claim<->evidence consistency check).
+
+    Scope -- what this function does NOT do: it takes no `CanonicalWork`
+    and does not run G1-G7 (source-exists / real-identifier / resolvable-
+    URL / metadata-fetched -- see this module's own docstring). It answers
+    ONLY "given this claim and this real, fetched `passage`, what
+    statement type/relation does the passage show, and is that admissible
+    for this claim" -- i.e. the same mapping `gate_admission_decision()`
+    applies once a work has reached VERIFIED/content-available (see
+    `_admission_from_resolved_signals()`, called here with
+    `work_state=VerificationState.VERIFIED`). A caller that has not yet
+    confirmed the source is real via `find_cites()`/`verify_cite()` (or an
+    equivalent G1-G7 pass) must not treat this function's decision as a
+    full citation verdict on its own -- reality-anchoring (does this
+    source exist at all) is a separate, already-existing gate.
+
+    Args:
+        claim: the claim being checked against `passage`.
+        passage: the real, fetched evidence text (title/abstract/passage
+            -- never invented by the AI; must come from a real adapter
+            record, e.g. via `find_cites()`/`verify_cite()`).
+        ai_statement_type: the AI Reader's own proposed statement-type
+            judgment for `passage` (one of
+            `evidence.statement_type.ALL_STATEMENT_TYPES`'s values), or
+            `None` if the caller is not participating in the AI-Reader
+            role for this call (a pure deterministic-only caller, e.g.
+            the CLI).
+        ai_relation: the AI Reader's own proposed relation judgment (one
+            of `RelationLabel.ALL`'s values), or `None`.
+        intended_relation: same meaning as `gate_admission_decision()`'s
+            parameter of the same name -- which direction the claim needs
+            the evidence to point (default `RelationLabel.SUPPORTS`).
+
+    Silent-value-rejection policy (explicit choice, documented per the
+    task): an `ai_statement_type`/`ai_relation` that is not a legal value
+    of its type is IGNORED -- treated exactly as if that argument had not
+    been supplied at all -- rather than raising. An AI Reader's proposal
+    is untrusted free text under the AI Discovery Contract above; a
+    malformed proposal is exactly the class of input this checker must
+    survive without crashing, not a caller bug worth an exception for.
+
+    Returns:
+        {
+          "decision": "ADMIT" | "REJECT" | "HOLD",
+          "reasons": [str, ...],   # every reason that contributed,
+                                    # in order -- agreement/disagreement
+                                    # findings first, then the admission
+                                    # mapping's own reason.
+          "ai_proposed": {"statement_type": ..., "relation": ...} | None,
+                                    # None iff neither ai_statement_type
+                                    # nor ai_relation was a legal value.
+          "deterministic_checked": {
+              "statement_type": checker_statement_type,
+              "relation": checker_relation,
+          },
+          "agreement": true | false | None,
+                                    # None -- no (valid) AI-proposed value
+                                    # supplied at all (pure deterministic-
+                                    # only caller -- falls back to
+                                    # checker-only, EXACTLY matching
+                                    # gate_admission_decision()'s existing
+                                    # behavior byte-for-byte, per the
+                                    # backward-compatibility requirement).
+                                    # True -- every AI-proposed value
+                                    # supplied agreed with the checker's
+                                    # own independent classification.
+                                    # False -- at least one AI-proposed
+                                    # value DISAGREED with the checker --
+                                    # `decision` is ALWAYS "HOLD" in this
+                                    # case (disagreement is information,
+                                    # never silently resolved by trusting
+                                    # either side alone -- same discipline
+                                    # as `evidence/relation.py`'s own
+                                    # stage-1/stage-2 checker design).
+        }
+    """
+    checker_statement_type = classify_statement_type(passage)
+    checker_relation = classify_relation(passage, claim)
+
+    # Silent-value-rejection: an illegal value is treated as not supplied.
+    valid_ai_statement_type = (
+        ai_statement_type if ai_statement_type in ALL_STATEMENT_TYPES else None
+    )
+    valid_ai_relation = ai_relation if ai_relation in RelationLabel.ALL else None
+
+    ai_supplied = valid_ai_statement_type is not None or valid_ai_relation is not None
+
+    reasons: list[str] = []
+    disagreement = False
+
+    if valid_ai_statement_type is not None:
+        if valid_ai_statement_type == checker_statement_type:
+            reasons.append(
+                f"ai_statement_type={valid_ai_statement_type} agrees with "
+                f"checker_statement_type={checker_statement_type}"
+            )
+        else:
+            disagreement = True
+            reasons.append(
+                f"ai_statement_type={valid_ai_statement_type} vs "
+                f"checker_statement_type={checker_statement_type} -- "
+                "disagreement, routed to HOLD"
+            )
+
+    if valid_ai_relation is not None:
+        if valid_ai_relation == checker_relation:
+            reasons.append(
+                f"ai_relation={valid_ai_relation} agrees with "
+                f"checker_relation={checker_relation}"
+            )
+        else:
+            disagreement = True
+            reasons.append(
+                f"ai_relation={valid_ai_relation} vs "
+                f"checker_relation={checker_relation} -- disagreement, "
+                "routed to HOLD"
+            )
+
+    ai_proposed = (
+        {"statement_type": valid_ai_statement_type, "relation": valid_ai_relation}
+        if ai_supplied
+        else None
+    )
+    deterministic_checked = {
+        "statement_type": checker_statement_type,
+        "relation": checker_relation,
+    }
+
+    if disagreement:
+        return {
+            "decision": Decision.HOLD,
+            "reasons": reasons,
+            "ai_proposed": ai_proposed,
+            "deterministic_checked": deterministic_checked,
+            "agreement": False,
+        }
+
+    # No disagreement: either no AI value was supplied at all (falls back
+    # to the checker's own classification alone, matching
+    # gate_admission_decision()'s pre-existing behavior byte-for-byte --
+    # requirement 3), or every AI value supplied AGREED with the checker
+    # (requirement 2) -- both cases resolve to the SAME signal (the
+    # checker's own value, which is identical to the AI's when they
+    # agreed), so the resolved statement_type/relation is always the
+    # checker's.
+    admission_debug: dict = {
+        "work_state": VerificationState.VERIFIED,
+        "relation": checker_relation,
+        "intended_relation": intended_relation,
+        "statement_type": checker_statement_type,
+    }
+    decision, admission_debug = _admission_from_resolved_signals(
+        work_state=VerificationState.VERIFIED,
+        relation=checker_relation,
+        intended_relation=intended_relation,
+        statement_type=checker_statement_type,
+        debug=admission_debug,
+    )
+    reasons.append(admission_debug.get("reason", decision))
+
+    return {
+        "decision": decision,
+        "reasons": reasons,
+        "ai_proposed": ai_proposed,
+        "deterministic_checked": deterministic_checked,
+        "agreement": True if ai_supplied else None,
+    }

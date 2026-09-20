@@ -352,3 +352,22 @@ def classify_statement_type(passage: str) -> StatementType:
 # Statement types that report an actual finding -- the only types that may
 # ever lead to ADMIT in `evidence/verifier.py::gate_admission_decision()`.
 FINDING_STATEMENT_TYPES: frozenset[StatementType] = frozenset({"RESULT", "CONCLUSION"})
+
+# Every legal `StatementType` value (mirrors the `Literal` above at runtime).
+# Used by `evidence/verifier.py::check_claim_evidence()` to silently reject
+# an AI-Reader-proposed `ai_statement_type` that is not a real StatementType
+# value, per the AI Discovery Contract (an AI proposal is untrusted input,
+# never trusted or crashed on -- see that function's docstring).
+ALL_STATEMENT_TYPES: frozenset[StatementType] = frozenset(
+    {
+        "BACKGROUND",
+        "OBJECTIVE",
+        "HYPOTHESIS",
+        "METHOD",
+        "RESULT",
+        "CONCLUSION",
+        "LIMITATION",
+        "PRIOR_WORK",
+        "UNKNOWN",
+    }
+)

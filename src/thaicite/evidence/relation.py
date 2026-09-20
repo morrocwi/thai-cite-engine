@@ -408,16 +408,61 @@ def _shared_term_positions(tokens: list[str], shared: set[str]) -> list[int]:
     return [i for i, tok in enumerate(tokens) if tok in shared]
 
 
+def _en_inflection_bases(word: str) -> set[str]:
+    """Cheap candidate base forms for common REGULAR English inflections
+    (-ed/-ing/-es/-s) of `word`. Deliberately NOT a real stemmer -- no
+    irregular verbs (e.g. fall/fell), no y->i or consonant-doubling rules
+    -- it exists only to stop the direction-word-class mechanism from
+    needing every inflected form of a base word enumerated by hand.
+
+    Fixed 2026-09-20 (round 5's own final review, live-reproduced): the
+    class list had "decrease"/"decreases" but not "decreased", so a claim
+    "X increases Y" vs. a passage "Results showed that X decreased Y"
+    was misread as POSITIVE (no reversal detected) and reached a false
+    ADMIT via the pure-deterministic path -- no AI involved at all, so
+    round 5's AI-vs-checker disagreement safety net does not even apply
+    to this failure. This is the same category of gap as round 3/4's
+    disclosed "finite word list" limitation, just one inflectional step
+    away rather than a wholly different word -- worth closing generally
+    (inflection handling) rather than by adding "decreased" as one more
+    literal entry, which would not have caught "decreasing" either.
+    """
+    bases = {word}
+    if word.endswith("ed") and len(word) > 3:
+        bases.add(word[:-1])  # decreased -> decrease (base already ends in e)
+        bases.add(word[:-2])  # restricted -> restrict (base has no e)
+    if word.endswith("ing") and len(word) > 4:
+        bases.add(word[:-3])  # expanding -> expand
+        bases.add(word[:-3] + "e")  # increasing -> increase
+    if word.endswith("es") and len(word) > 3:
+        bases.add(word[:-1])  # increases -> increase
+        bases.add(word[:-2])
+    elif word.endswith("s") and len(word) > 2 and not word.endswith("ss"):
+        bases.add(word[:-1])  # raises -> raise
+    return bases
+
+
 def _direction_class_present(tokens: list[str], word_class: frozenset[tuple[str, ...]]) -> bool:
-    return any(_find_subsequence_positions(tokens, seq) for seq in word_class)
+    single_word_bases = {seq[0] for seq in word_class if len(seq) == 1}
+    if single_word_bases and any(
+        _en_inflection_bases(tok) & single_word_bases for tok in tokens
+    ):
+        return True
+    return any(_find_subsequence_positions(tokens, seq) for seq in word_class if len(seq) > 1)
 
 
 def _direction_class_positions(
     tokens: list[str], word_class: frozenset[tuple[str, ...]]
 ) -> list[int]:
     positions: list[int] = []
+    single_word_bases = {seq[0] for seq in word_class if len(seq) == 1}
+    if single_word_bases:
+        for i, tok in enumerate(tokens):
+            if _en_inflection_bases(tok) & single_word_bases:
+                positions.append(i)
     for seq in word_class:
-        positions.extend(_find_subsequence_positions(tokens, seq))
+        if len(seq) > 1:
+            positions.extend(_find_subsequence_positions(tokens, seq))
     return positions
 
 

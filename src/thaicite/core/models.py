@@ -372,6 +372,17 @@ class CiteUse:
     # Mirrors work.primary.thai_relevance at construction time -- metadata
     # for the caller only, never a gate (see Candidate.thai_relevance).
     thai_relevance: list[str] = field(default_factory=list)
+    # AI-Reader-vs-deterministic-Checker transparency record ("Cite Card",
+    # 2026-09-20 role-change fix -- see `evidence/verifier.py
+    # ::check_claim_evidence()`, this record's source). `None` for a
+    # `CiteUse` built via the plain deterministic-only path (e.g.
+    # `resolve_citations()`'s current wiring, which does not yet call
+    # `check_claim_evidence()` -- see the sibling MCP-contract wiring phase)
+    # -- these fields are additive and do not change any existing
+    # `CiteUse` construction call site's required arguments.
+    ai_proposed: dict[str, Any] | None = None
+    deterministic_checked: dict[str, Any] | None = None
+    agreement: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.claim or not str(self.claim).strip():

@@ -396,6 +396,138 @@ rather than the primary mechanism. This is the next planned redesign — see
 `docs/ARCHITECTURE_NOTE.md` and `ARCHITECTURE.md` for status once it lands; until then, the
 deterministic layer above is what actually runs.
 
+## Round 5: role change — Scout/Reader (AI) + deterministic Gate (ThaiCite), MCP 3-primitive surface (2026-09-20, same day)
+
+Round 4's own final review found 2 more real bugs in its own fixes, confirming a structural
+pattern already named at the end of that round: closed-vocabulary pattern-matching
+(`evidence/statement_type.py`, `evidence/relation.py`) is the wrong tool for genuinely
+semantic judgment (what is this passage asserting? does it support this specific claim?).
+The founder-approved fix, landed same day, is a **role change**, not another heuristic patch.
+
+**What changed.** ThaiCite is exposed over MCP to be called BY an AI agent. That calling AI
+now plays two roles:
+
+- **Scout** — proposes a candidate source (`hint`: title/DOI/PMID/author/search terms).
+- **Reader** — reads a real, fetched passage and proposes its own judgment of statement type
+  and claim↔evidence relation.
+
+ThaiCite itself stays a lightweight, dependency-free deterministic tool, now exposing **3 new
+primitive MCP tools** alongside the 2 existing backward-compatible wrappers:
+
+1. `resolve_source(hint)` (`core/source_resolution.py`) — reality-anchoring. Confirms a real
+   record exists via a real adapter (the same G1–G7 identity/existence gates every other entry
+   point uses); returns `SOURCE_CONFIRMED` only on a genuine adapter-backed match,
+   `UNRESOLVED` for everything else — **including a plausible-sounding fabricated title that
+   no adapter can find** (live-reproduced in this round's adversarial pass, see below).
+2. `fetch_evidence(source_id)` (`core/evidence_fetch.py`) — returns the real passage/abstract
+   an adapter actually holds for that record, never invented; `evidence_level` is the honest
+   ceiling of what was actually retrieved (`ABSTRACT`/`METADATA`, no `PASSAGE`/full-text level
+   exists yet in this codebase's adapters).
+3. `check_claim_evidence(claim, passage, ai_statement_type=None, ai_relation=None, ...)`
+   (`evidence/verifier.py`) — the deterministic ADMIT/REJECT/HOLD Gate. It ALWAYS runs the
+   existing deterministic checker independently of whatever the AI proposes, and treats
+   disagreement between the AI's proposal and the checker's own classification as
+   **information, routed to `HOLD`, never silently resolved by trusting either side**.
+   Agreement (or no AI participation at all) falls through to the checker's own
+   `gate_admission_decision()`-equivalent mapping, byte-for-byte compatible with the
+   pre-existing pure-deterministic path.
+
+`find_cites()`/`verify_cite()` keep their exact pre-round-5 public signature and return shape
+— `verify_cite()` is now internally a wrapper over the 3 new primitives
+(`resolve_source → fetch_evidence → check_claim_evidence`, called with no AI participation,
+i.e. pure-deterministic mode); `find_cites()` is unchanged, still calling
+`core.engine.discover_citations()` directly (discovery has no single claim to run
+`check_claim_evidence()` against).
+
+**AI Discovery Contract** (documented in every new tool's own docstring, since that docstring
+is what the calling AI actually reads): the AI MAY propose a hint, search terms, or its own
+read of statement type/relation. The AI MAY NOT claim — and no tool here accepts on the AI's
+say-so — that a source is VERIFIED/CONFIRMED, that a citation is safe-to-cite, any
+bibliographic fact not backed by a real adapter record, or an ADMIT decision. Those only ever
+come from ThaiCite's own deterministic `resolve_source`/`fetch_evidence`/`check_claim_evidence`
+functions.
+
+**Explicit founder constraint, honored throughout:** no LLM SDK (`openai`, `anthropic`, or
+any other AI-vendor API client) is imported or called anywhere in `src/thaicite/` — grepped
+and confirmed zero hits this round (only comment/docstring mentions of the words
+"openai"/"anthropic" explaining the constraint itself). `pyproject.toml`'s dependency list is
+unchanged (`requests`, `pythainlp`). The calling AI is already an LLM by construction of MCP;
+ThaiCite adds no new vendor dependency, no API key requirement, no bundled per-call cost.
+
+### Round 5's own adversarial review — 1 real, live-reproduced bug found (not blocking, same failure direction as round 4's disclosed limitation, but concretely worse than previously demonstrated)
+
+Consistent with this project's history (every prior "clean-looking" round was later found
+wanting), a skeptical adversarial pass against the freshly-landed round-5 code found:
+
+- **Reality-anchor check (PASS, live-reproduced):** `resolve_source()` was given a fabricated,
+  plausible-sounding title against a realistic-fixture adapter with only one real record; it
+  correctly returned `UNRESOLVED`, never `SOURCE_CONFIRMED`, for the invented title, while the
+  real title in the same fixture correctly resolved (`SOURCE_CONFIRMED`, control case).
+- **Consistency-checker gap (CONFIRMED, real, HIGH severity):** `check_claim_evidence()`'s
+  deterministic checker was fed claim `"The new fertilizer increases rice yield in Isan."`
+  against passage `"Results showed that the new fertilizer decreased rice yield in Isan by 12
+  percent compared to control plots."` — a passage that directly *contradicts* the claim.
+  **`check_claim_evidence()` returned `decision="ADMIT"`**, in **pure-deterministic mode (no
+  `ai_relation`/`ai_statement_type` at all)** — i.e. this is exactly the code path
+  `verify_cite()` and the CLI already use today, not a hypothetical AI-Reader misuse case.
+  Root cause: `evidence/relation.py`'s `_POSITIVE_DIRECTION_WORDS`/`_NEGATIVE_DIRECTION_WORDS`
+  open word-classes (and the older `_DIRECTIONAL_PAIRS`/`_TIGHT_DIRECTIONAL_PAIRS` closed-pair
+  lists) contain the bare present-tense forms `"increase"/"increases"` vs.
+  `"decrease"/"decreases"`, but **not the past-tense inflection `"decreased"`** — an extremely
+  common form in reported results ("X decreased by N%"). With no reversal signal detected,
+  `extract_proposition()` reads the passage's polarity as `POSITIVE` (matching the claim)
+  instead of `NEGATIVE` (reversing it), `classify_relation()` returns `SUPPORTS`, and — because
+  the passage also happens to carry a genuine `RESULT` cue phrase ("Results showed that...") —
+  `gate_admission_decision()`'s mapping ADMITs. This is the **exact dangerous failure mode**
+  `check_claim_evidence()`'s own module docstring names as the reason this whole Gate exists
+  (a false `SUPPORTS` silently producing a false `ADMIT`), reproduced live, in the
+  pure-deterministic path, on a single missing verb inflection.
+  - This is the SAME category of gap round 4 already disclosed honestly ("the antonym-
+    pair/word-class mechanism remains narrowly bounded... partial, not complete,
+    generalization" — round 4's own example was an unseen novel pair, `"hastens"/"delays"`).
+    Round 5's finding shows the gap is not limited to genuinely novel vocabulary — it also
+    covers ordinary inflected forms of words *already present* in the list in their base form,
+    which is a narrower, more easily-closed gap than round 4's framing suggested, and worth
+    fixing (adding common inflections, or a lightweight stemmer) before this checker is relied
+    on in pure-deterministic mode for anything user-facing.
+  - **Why this is not scored as a blocking regression for the round-5 role-change itself:**
+    the round-5 architecture's actual safety property is that an AI Reader participating
+    honestly (proposing its own independent `ai_relation` read) and a checker that happens to
+    share the same specific gap would both need to agree on the SAME wrong answer to reach a
+    false ADMIT — round 5 does not claim to fix the deterministic checker's own accuracy, only
+    to add a disagreement-routes-to-HOLD layer on top of it, which this finding does not
+    defeat (an honest AI Reader reading "decreased... by 12 percent" would not report
+    `ai_relation="SUPPORTS"`, and would trigger disagreement → `HOLD`). The finding is real and
+    reportable precisely because the **pure-deterministic path** (no AI participation at all —
+    still what `verify_cite()`/`find_cites()`/the CLI use today) has no such backstop; it is
+    already honestly disclosed as a limitation in `docs/ARCHITECTURE_NOTE.md`'s Round 5
+    section ("the CLI/find_cites/verify_cite wrapper paths still run deterministic-only"), and
+    this finding is the concrete, reproducible evidence for exactly why that disclosure matters.
+  - **Fixed same-day, immediately after this finding**: `evidence/relation.py` gained
+    `_en_inflection_bases()`, a deliberately narrow (regular inflections only — no irregular
+    verbs like fall/fell, no y→i or consonant-doubling rules) English suffix-stripper for
+    -ed/-ing/-es/-s, applied inside `_direction_class_present()`/`_direction_class_positions()`
+    so a token like `"decreased"`/`"decreasing"` is recognized as the same direction class as
+    its registered base form `"decrease"` without needing every inflected form enumerated by
+    hand — closing the general *category* of gap (missing inflections), not just this one word.
+    Confirmed fixed for the exact repro above (`decreased` → `CHALLENGES`, no longer
+    `SUPPORTS`/`ADMIT`) and for the `-ing` form (`decreasing` → `CHALLENGES`); confirmed no
+    regression on every previously-passing case (`218/218` tests still passing). This fix
+    itself only covers *regular* English inflections — an irregular form (e.g. claim "rise" vs.
+    passage "fell") is **not** covered and remains exactly the kind of gap round 4/5 already
+    disclosed as open; Thai direction words are unaffected (no inflection stripping applied to
+    non-Latin-suffix tokens).
+- **No embedded LLM (PASS):** `grep -rniE "openai|anthropic|import requests"` across
+  `src/thaicite/` shows only the deliberate `requests` imports in the 4 real bibliographic
+  adapters (OpenAlex/Crossref/ThaiJO harvester/PubMed — ordinary HTTP calls to non-LLM APIs)
+  and comment/docstring mentions explaining the no-LLM constraint itself; `pyproject.toml`
+  dependencies unchanged.
+- **Backward compatibility (PASS):** full suite green, 218/218 (`PYTHONPATH=src python3 -m
+  pytest tests/ -q`), including all pre-round-5 `find_cites`/`verify_cite` tests unmodified in
+  spirit.
+- **No secrets/attribution/path leaks (PASS):** no hardcoded email/credentials, no AI/vendor
+  attribution added to code, no local username/path strings introduced in any round-5 file.
+
 ## References
 
 - Original findings (pre-fix): `tests/golden/CONCEPT_VALIDATION_REPORT.md`
