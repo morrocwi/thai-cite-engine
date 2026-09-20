@@ -16,12 +16,55 @@ that NOT_FOUND must never be conflated with a source being unavailable
 typed vocabulary for "how much of the source landscape did we actually get
 to look at", independent of whether anything was found.
 
-Four states, per adapter AND per sub-endpoint where a source decomposes
-into sub-endpoints (ThaiJO's per-category OAI-PMH endpoints):
+CONFIRMED BUG (round 4, 2026-09-20, this fix): the original four-state
+vocabulary (OK/UNAVAILABLE/NOT_ATTEMPTED/NOT_CONNECTED) conflated two very
+different meanings under one `OK` label -- "this adapter is queued to be
+searched" (an a-priori intention, set by `routing/router.py::route()`
+BEFORE any search ran) and "this adapter was actually, successfully,
+freshly searched" (a post-search fact). Two concrete failures fell out of
+that conflation:
 
-  OK            -- searched successfully (even if 0 query-matching records).
+  1. `ThaiJOAdapter.search()` could know its own local snapshot was stale
+     (`coverage_summary()["index_is_stale"] is True`) while still returning
+     a bare NOT_FOUND `AdapterError` -- and because NOT_FOUND was never one
+     of the states `RouteDecision.update_coverage()` treated as "downgrade
+     away from OK" (only RATE_LIMITED/TIMEOUT/ACCESS_DENIED/PARSER_ERROR
+     were), a 3-month-old, never-re-synced snapshot returning zero matches
+     could present to a caller as `THAIJO:so01 = OK`, indistinguishable
+     from a genuinely fresh, successful search.
+  2. `route()`'s a-priori `OK`, set for every adapter it plans to include
+     before any search has run, was never actually confirmed by real
+     post-search evidence for the (very common) case of "adapter ran,
+     found nothing, reported a plain NOT_FOUND" -- that adapter's `OK` was
+     simply left untouched, so a caller could not tell "we truly searched
+     this and it came back empty" apart from "we never got any evidence
+     this adapter ran at all this call".
+
+The fix: split the old `OK` into `PLANNED` (the a-priori intention) and
+`SEARCHED_OK` (a confirmed, executed, fresh search), and add `STALE` as its
+own state (executed against a snapshot past its staleness threshold --
+distinct from both a fresh success and a hard transport failure).
+
+Six states, per adapter AND per sub-endpoint where a source decomposes into
+sub-endpoints (ThaiJO's per-category OAI-PMH endpoints):
+
+  PLANNED       -- `route()` included this adapter for this (context, query)
+                   but no search has run yet. The new a-priori default,
+                   replacing the old a-priori OK. A `PLANNED` entry that
+                   survives all the way to a printed/returned result means
+                   no real post-search evidence was ever folded back in for
+                   that adapter -- itself worth surfacing, never silently
+                   treated as a success.
+  SEARCHED_OK   -- genuinely executed and returned real, fresh-enough
+                   results (or a confirmed fresh empty result).
+  STALE         -- executed against a snapshot past its staleness
+                   threshold -- distinct from a hard failure: the search
+                   itself ran, but its answer reflects old data, not a live
+                   guarantee.
   UNAVAILABLE   -- attempted, failed -- `reason` says why (RATE_LIMITED,
-                   TIMEOUT, ACCESS_DENIED, PARSER_ERROR, or "index stale").
+                   TIMEOUT, ACCESS_DENIED, PARSER_ERROR, an index that has
+                   never been synced at all, or "index stale" for a
+                   sub-endpoint-level detail).
   NOT_ATTEMPTED -- never queried this run (e.g. a budget/ordering/domain-
                    routing decision excluded it -- `routing/router.py`'s
                    HEALTH domain excluding ThaiJO is a real example).
@@ -35,12 +78,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-OK = "OK"
+PLANNED = "PLANNED"
+SEARCHED_OK = "SEARCHED_OK"
+STALE = "STALE"
 UNAVAILABLE = "UNAVAILABLE"
 NOT_ATTEMPTED = "NOT_ATTEMPTED"
 NOT_CONNECTED = "NOT_CONNECTED"
 
-ALL_STATES = frozenset({OK, UNAVAILABLE, NOT_ATTEMPTED, NOT_CONNECTED})
+ALL_STATES = frozenset(
+    {PLANNED, SEARCHED_OK, STALE, UNAVAILABLE, NOT_ATTEMPTED, NOT_CONNECTED}
+)
+
+# The only state that represents a CONFIRMED, fresh, successfully-executed
+# search -- everything else (including PLANNED and STALE) is either "not
+# actually confirmed yet" or "confirmed but with a real caveat attached".
+CONFIRMED_FRESH_STATES = frozenset({SEARCHED_OK})
 
 # Sources this project knows about but implements no adapter for at all in
 # v1 (ARCHITECTURE.md SS56) -- always reported NOT_CONNECTED, regardless of
@@ -86,10 +138,37 @@ def format_coverage_lines(entries: list[CoverageEntry]) -> list[str]:
 
 
 def coverage_is_all_negative(entries: list[CoverageEntry]) -> bool:
-    """True only if EVERY entry is UNAVAILABLE/NOT_ATTEMPTED/NOT_CONNECTED --
-    i.e. nothing in the coverage list was ever actually, successfully
-    searched. Used to decide whether a "not found" result needs the
-    strongest possible caveat ("we did not really search anything") versus
-    the ordinary "searched, found nothing" caveat.
+    """True only if NO entry ever reached a confirmed, fresh `SEARCHED_OK`
+    -- i.e. nothing in the coverage list was ever actually, successfully,
+    freshly searched. `PLANNED` (never confirmed either way) and `STALE`
+    (executed, but against out-of-date data) both count as negative here,
+    same as `UNAVAILABLE`/`NOT_ATTEMPTED`/`NOT_CONNECTED` -- none of them is
+    a confirmed fresh search. Used to decide whether a "not found" result
+    needs the strongest possible caveat ("we did not really search anything
+    we can currently vouch for") versus the ordinary "searched, found
+    nothing" caveat.
     """
-    return bool(entries) and all(e.status != OK for e in entries)
+    return bool(entries) and all(e.status not in CONFIRMED_FRESH_STATES for e in entries)
+
+
+def coverage_has_stale(entries: list[CoverageEntry]) -> bool:
+    """True when at least one entry is `STALE` -- used to give a "this
+    reflects an old snapshot, not a live guarantee" caveat its own,
+    distinct wording from the harsher "nothing was ever searchable at all"
+    caveat `coverage_is_all_negative()` guards.
+    """
+    return any(e.status == STALE for e in entries)
+
+
+def coverage_has_unconfirmed_planned(entries: list[CoverageEntry]) -> bool:
+    """True when at least one entry is still `PLANNED` -- meaning `route()`
+    intended to search that adapter but no real post-search evidence (a
+    result, a NOT_FOUND, or a transport error) was ever folded back into
+    the coverage readout for it. This should be rare/never in a normal
+    end-to-end call (every routed adapter is actually invoked), but a
+    caller that never called `RouteDecision.update_coverage()` at all, or
+    an adapter that raised instead of returning `AdapterError`, would leave
+    entries in this state -- worth its own honest flag rather than silently
+    reading as either success or failure.
+    """
+    return any(e.status == PLANNED for e in entries)

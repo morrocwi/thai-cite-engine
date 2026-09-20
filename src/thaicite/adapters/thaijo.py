@@ -126,14 +126,19 @@ class ThaiJOAdapter(SourceAdapter):
     def coverage_summary(self) -> dict[str, Any]:
         """Structured Coverage Readout for THIS adapter -- index-level
         staleness/emptiness plus a per-endpoint (per-category-code)
-        OK/UNAVAILABLE/NOT_ATTEMPTED breakdown, so a caller can distinguish
-        "genuinely searched a fresh snapshot, nothing matched" from "this
-        source was never actually searched" (see `core/coverage.py`'s
-        module docstring and this project's Coverage Readout redesign).
+        SEARCHED_OK/UNAVAILABLE/NOT_ATTEMPTED breakdown, so a caller can
+        distinguish "genuinely searched a fresh snapshot, nothing matched"
+        from "this source was never actually searched" and from "searched,
+        but against a stale snapshot" (see `core/coverage.py`'s module
+        docstring and this project's Coverage Readout redesign).
 
         `search()` attaches exactly this (via `coverage_summary()`) to every
-        NOT_FOUND `AdapterError` it returns; `coverage_entries()` below turns
-        it into typed `CoverageEntry` rows for `routing/router.py`.
+        NOT_FOUND `AdapterError` it returns -- `RouteDecision.update_coverage()`
+        reads `index_never_synced`/`index_is_stale` straight out of this dict
+        (via `AdapterError.coverage`) to resolve the a-priori `PLANNED` entry
+        into `UNAVAILABLE`/`STALE`/`SEARCHED_OK`; `coverage_entries()` below
+        turns this same snapshot into typed `CoverageEntry` rows for
+        `routing/router.py`.
         """
         stats = self._index.stats()
         endpoint_status = self._index.get_endpoint_coverage()
@@ -153,6 +158,16 @@ class ThaiJOAdapter(SourceAdapter):
         (`thaijo_harvester.default_endpoint_codes()`), built from the last
         persisted `endpoint_status` row for each code -- an endpoint with NO
         recorded sync attempt is NOT_ATTEMPTED, never silently omitted.
+
+        These rows report HARVEST status (was this endpoint ever reachable
+        by `ThaiJOHarvester.sync()`), which already happened in the past --
+        never the a-priori `PLANNED` state `routing/router.py::route()`
+        uses for "will be attempted this call" (that a-priori state is
+        never appropriate here since harvesting is a separate, already-
+        completed operator step; see this module's docstring). A completed,
+        successful harvest is reported `SEARCHED_OK` (real, confirmed
+        evidence this endpoint's content is in the local snapshot), a
+        failed harvest `UNAVAILABLE`.
         """
         status_by_code = self._index.get_endpoint_coverage()
         entries: list[cov.CoverageEntry] = []
@@ -172,7 +187,7 @@ class ThaiJOAdapter(SourceAdapter):
                 entries.append(
                     cov.CoverageEntry(
                         source=f"{self.name}:{code}",
-                        status=cov.OK,
+                        status=cov.SEARCHED_OK,
                         reason=f"{row['records_harvested']} record(s) harvested",
                         detail=row,
                     )

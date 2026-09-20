@@ -276,6 +276,126 @@ passing**, independently re-run and confirmed by a fresh adversarial review (rou
 final review), which found no correctness issues beyond the documentation gap this section
 fills.
 
+## Coverage state leak fixed: PLANNED/SEARCHED_OK/STALE split (round 4, 2026-09-20)
+
+**Confirmed bug (round 4 red-team, folded into `docs/HANDOFF_2026-09-20.md`'s "CoverageTruth"
+phase)**: the four-state vocabulary above (`OK`/`UNAVAILABLE`/`NOT_ATTEMPTED`/`NOT_CONNECTED`)
+conflated "we intend to search this adapter" (`route()`'s a-priori default) with "we actually,
+freshly searched this adapter" under one `OK` label. Two concrete failures fell out of that:
+`ThaiJOAdapter.search()` could know its own snapshot was stale (`coverage_summary()
+["index_is_stale"]`) while still returning a bare `NOT_FOUND` `AdapterError`, and because
+`RouteDecision.update_coverage()` only ever downgraded an adapter away from `OK` on a real
+transport error (RATE_LIMITED/TIMEOUT/ACCESS_DENIED/PARSER_ERROR), a stale, never-re-synced
+ThaiJO snapshot returning zero matches could present as `THAIJO:so01 = OK`, indistinguishable
+from a genuinely fresh, successful search. Separately, an adapter that genuinely ran and
+returned a plain `NOT_FOUND` (not stale) never got its a-priori `OK` actually CONFIRMED by real
+evidence either.
+
+**Fix**: `src/thaicite/core/coverage.py`'s vocabulary is now six states:
+`PLANNED` (a-priori, replacing the old a-priori `OK`) → `SEARCHED_OK` (confirmed, fresh,
+genuinely executed) / `STALE` (genuinely executed, but against a snapshot past its staleness
+threshold) / `UNAVAILABLE` (real transport failure, or a ThaiJO index that has never been synced
+at all) — `NOT_ATTEMPTED`/`NOT_CONNECTED` unchanged. `RouteDecision.update_coverage()`
+(`src/thaicite/routing/router.py`) now reads `AdapterError.coverage`'s `index_is_stale`/
+`index_never_synced` flags (already attached by `ThaiJOAdapter.search()`) for every NOT_FOUND
+adapter, not just transport errors, to resolve each `PLANNED` entry into
+`SEARCHED_OK`/`STALE`/`UNAVAILABLE`. A related engine-level gap was fixed alongside this
+(`src/thaicite/core/engine.py`, both `resolve_citations()` and `discover_citations()`): when one
+adapter has a real transport error and a sibling adapter genuinely returned `NOT_FOUND` on the
+same query, the `by_adapter` detail used to drop the `NOT_FOUND` sibling's evidence entirely
+(filtered down to only the erroring adapters) — it now carries every adapter's evidence, which
+`update_coverage()` depends on to resolve `PLANNED` correctly for every adapter, not just the one
+that failed. `cli.py`/`mcp_server.py` now give a `STALE`-specific caveat (distinct from the
+harsher "coverage failure" caveat) whenever a "not found" result never reached a confirmed
+`SEARCHED_OK`; `mcp_server.py`'s `find_cites()`/`verify_cite()` also return a `coverage_has_stale`
+boolean alongside `coverage_all_negative` for programmatic callers.
+
+Regression/worked-example tests: `tests/test_coverage_readout.py` (extended with the new
+vocabulary plus a dedicated worked example — a ThaiJO index with real records, harvested >14
+days ago, queried with zero matches, confirmed end-to-end through `route()` +
+`update_coverage()` to surface `STALE`, never `OK`) and
+`tests/test_coverage_unavailable_source_regression.py` (updated so its synthetic "genuine
+zero-match" adapter follows the same `AdapterError(NOT_FOUND)` contract every real adapter
+follows, rather than an unrealistic bare `[]`). Full suite: **163/163 passing**.
+
+## Round 4: problem-centered redesign — claim discipline, evidence-status layer, proposition-based relation, coverage truth (2026-09-20, same day)
+
+Per a founder-approved redesign (treat the actual problem — "does what we read give us the
+right to claim this?" — as the driver, not "which bug do we patch next"), 4 structural
+changes landed:
+
+1. **Claim discipline** — `core/engine.py`'s `claim=context or query` silent fallback
+   (confirmed: `verify_cite(context="", citation="paper title")` would silently treat the
+   citation's own title as the claim) is removed; VERIFY mode now fails closed with a clear
+   error when no real claim is supplied. `gate_g6_identity_match()` gained a priority-1 exact-
+   identifier shortcut (DOI/PMID/PMCID/source_record_id) so a real exact identifier match no
+   longer needs to pass a fuzzy title/author check — previously a **real DOI was weaker
+   evidence than a fuzzy title match**, which was backwards.
+2. **Evidence-status layer** (`evidence/statement_type.py`, new) — directly closes the P0
+   "aboutness → SUPPORTS" category error (`ABOUT(claim) ≠ EVIDENCE_FOR(claim)`): a passage is
+   now classified BACKGROUND/OBJECTIVE/HYPOTHESIS/METHOD/RESULT/CONCLUSION/LIMITATION/
+   PRIOR_WORK/UNKNOWN (English+Thai lexical cues) before its relation label is trusted; only
+   RESULT/CONCLUSION passages may ever lead to `ADMIT` in `gate_admission_decision()`,
+   regardless of what the relation classifier says.
+3. **Proposition-based relation** (`evidence/relation.py`) — `extract_proposition()` (subject/
+   predicate-polarity/shared-terms) is now the primary relation signal, with the old keyword-
+   overlap/antonym-pair logic demoted to a checker; open word-classes replace some fixed pairs
+   (so a new verb only needs to join a polarity class, not be enumerated against every other
+   word); new `QUALIFIES` relation label (evidence supports the claim's core relation but under
+   a narrower scope/condition — e.g. "only among adults under 30") → `HOLD`, not `ADMIT`.
+4. **Coverage truth** (`core/coverage.py`) — state vocabulary extended to `PLANNED` (route()
+   intends to search, has not yet)/`SEARCHED_OK`/`STALE`/`UNAVAILABLE`/`NOT_ATTEMPTED`/
+   `NOT_CONNECTED`, closing a confirmed leak where a stale/never-synced ThaiJO index could
+   present as `OK`.
+
+**Round 4's own final review stayed skeptical (as instructed, given 3 prior "clean" rounds
+each missed real issues) and found 2 more real, live-reproduced bugs of its own — both fixed
+same-day, in this same round:**
+
+- **CRITICAL**: `classify_statement_type()`'s RESULT-cue matching was itself clause/negation-
+  blind — a RESULT cue phrase quoted inside a hypothetical clause ("We aimed to test **whether
+  the results show** that X...") or under explicit negation ("It is **not true that** we
+  **found** evidence that X") was still classified RESULT, chaining through
+  `gate_admission_decision()` to a confirmed live `ADMIT` for evidence that never reported a
+  finding — **the exact same bug class (ABOUT ≠ EVIDENCE_FOR) the whole statement-type layer
+  exists to close, just relocated one layer down.** Fixed: a sentence-local suppression guard
+  (`_is_suppressed_finding_cue`) now withholds a RESULT/CONCLUSION classification when a
+  "whether"/"if" hypothetical marker or an explicit report-negation phrase appears earlier in
+  the same sentence. Confirmed fixed for both exact repro cases; genuine RESULT sentences
+  (including genuine null-result findings, e.g. "found no significant increase") still
+  classify correctly as RESULT.
+- **HIGH**: the new exact-identifier shortcut in `gate_g6_identity_match()` was a naive
+  substring-containment check with no boundary awareness — two *different* DOIs where one is a
+  literal prefix of the other (a realistic case: corrections/versions/same-issue neighbors
+  commonly share a DOI prefix) falsely matched, e.g. `candidate.doi="10.1234/abcd"` (unrelated
+  title) against `query="10.1234/abcd2"` wrongly returned a PASS. Fixed: the match now requires
+  the character immediately before/after the matched substring (if any) to be non-alphanumeric
+  — confirmed the prefix-collision case now correctly fails while exact matches and
+  boundary-delimited embedded matches (e.g. "see 10.1234/abcd for details") still pass.
+
+**Honest, still-open limitation** (found by the same review, not fixed — lower severity, safer
+failure direction): `extract_proposition()` has no double-negation handling — a claim/evidence
+pair like claim "the policy increases access to healthcare" vs. evidence "It is **not** the case
+that the policy **fails to increase** access to healthcare" (a double negative that actually
+*affirms* the claim) is misread as a polarity mismatch, producing a **false REJECT** rather than
+the correct SUPPORTS. This is the safer of the two error directions (this project treats False
+ADMIT as far more costly than False Reject), but it is a real, demonstrated gap in the new
+proposition-extraction signal, not yet fixed. Also confirmed: the antonym-pair/word-class
+mechanism remains narrowly bounded — a newly-invented pair ("hastens"/"delays") still silently
+passes as SUPPORTS, while another ("strengthens"/"weakens") is now correctly caught by the
+open-word-class mechanism — partial, not complete, generalization.
+
+**Founder's own follow-up assessment, same day**: even with all of the above fixed, this
+pattern (fix a reported gap → red-team finds the same category of error one layer down) is
+evidence that deterministic lexical/pattern-matching is structurally the wrong tool for
+*semantic* judgment (statement typing, proposition extraction, claim↔evidence relation) —
+these should become an AI Reader's job (with a narrow, bias-resistant contract: shown only
+`claim` + `passage`, asked "what is this passage asserting?", never "does this support the
+claim?"), with the deterministic logic in this round demoted to a fallback/checker layer
+rather than the primary mechanism. This is the next planned redesign — see
+`docs/ARCHITECTURE_NOTE.md` and `ARCHITECTURE.md` for status once it lands; until then, the
+deterministic layer above is what actually runs.
+
 ## References
 
 - Original findings (pre-fix): `tests/golden/CONCEPT_VALIDATION_REPORT.md`

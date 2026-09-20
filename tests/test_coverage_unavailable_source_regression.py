@@ -11,11 +11,12 @@ This is the end-to-end composition of `core.engine.discover_citations()`
 
   - adapter A ("OPENALEX" track): returns a real transport-error
     `AdapterError` (RATE_LIMITED) on every query -- a genuine failure.
-  - adapter B ("CROSSREF" track): returns an empty list on every query --
-    a genuine, successful "zero matches" search.
+  - adapter B ("CROSSREF" track): returns a NOT_FOUND `AdapterError` on
+    every query -- a genuine, successful "zero matches" search, matching
+    the real contract every adapter follows.
 
 `RouteDecision.coverage` (after `update_coverage()`) must show A as
-UNAVAILABLE with a reason and B as OK -- not both folded into one
+UNAVAILABLE with a reason and B as SEARCHED_OK -- not both folded into one
 undifferentiated "not found", and A must never simply vanish from the
 coverage readout.
 """
@@ -50,12 +51,22 @@ class _FailingAdapter:
 class _EmptySuccessAdapter:
     """Simulates a source that WAS genuinely, successfully searched and
     simply found nothing -- a real, honest zero-match result, never an
-    error laundered as such."""
+    error laundered as such. Matches the actual contract every real
+    adapter (openalex.py/crossref.py/pubmed.py/thaijo.py) follows: a
+    genuine zero-match search returns a NOT_FOUND `AdapterError`, never a
+    bare empty list -- see `adapters/base.py`'s own module docstring. A
+    bare `[]` here would be unrealistic and would leave
+    `RouteDecision.update_coverage()` with no evidence this adapter ever
+    ran at all (see `core/coverage.py`'s `PLANNED` state)."""
 
     name = "CROSSREF"
 
     def search(self, query: str):
-        return []
+        return AdapterError(
+            state=VerificationState.NOT_FOUND,
+            adapter=self.name,
+            message=f"No records returned for query {query!r}.",
+        )
 
     def to_candidates(self, records):
         return []
@@ -83,7 +94,7 @@ def test_failed_source_reported_unavailable_zero_match_source_reported_ok():
     assert "RATE_LIMITED" in by_source["OPENALEX"].reason
 
     assert "CROSSREF" in by_source
-    assert by_source["CROSSREF"].status == cov.OK
+    assert by_source["CROSSREF"].status == cov.SEARCHED_OK
 
 
 def test_failed_source_track_status_reported_degraded_not_silently_ok():
@@ -112,16 +123,22 @@ def test_failed_source_not_collapsed_into_bare_not_found_on_resolve_citations():
     by_source = {e.source: e for e in decision.coverage}
     assert by_source["OPENALEX"].status == cov.UNAVAILABLE
     assert "RATE_LIMITED" in by_source["OPENALEX"].reason
-    assert by_source["CROSSREF"].status == cov.OK
+    assert by_source["CROSSREF"].status == cov.SEARCHED_OK
 
     # The raw engine result itself still distinguishes the two sources in
-    # its own not_found_queries/by_adapter detail -- this is the evidence
+    # its own rejected/by_adapter detail -- this is the evidence
     # update_coverage() reads from, confirmed directly so this test does
     # not depend on update_coverage() alone to prove the distinction exists.
-    not_found_entry = result["not_found_queries"].get(claim)
-    assert not_found_entry is not None
-    by_adapter = not_found_entry["by_adapter"]
+    # Both adapters returned an `AdapterError` this query (OPENALEX a real
+    # transport error, CROSSREF a genuine NOT_FOUND), so this lands in the
+    # "rejected"/adapter_error bucket, not `not_found_queries` -- and
+    # `by_adapter` must carry BOTH adapters' evidence, not just the one
+    # that errored (round-4 fix, 2026-09-20 -- see core/engine.py).
+    rejected_entry = result["rejected"].get(f"query::{claim}")
+    assert rejected_entry is not None
+    by_adapter = rejected_entry["by_adapter"]
     assert by_adapter["OPENALEX"]["state"] == VerificationState.RATE_LIMITED
+    assert by_adapter["CROSSREF"]["state"] == VerificationState.NOT_FOUND
 
 
 def test_coverage_is_not_all_negative_when_one_source_is_genuinely_ok():

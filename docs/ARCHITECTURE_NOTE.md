@@ -110,7 +110,7 @@ after passing all of gates G1–G7 (`evidence/verifier.py`), never before.
   (`TNRR`/`TCI` always declared `NOT_CONNECTED`, out of v1 scope, rather
   than silently omitted), so "nothing found" always reads as "nothing
   found, given this coverage" — never an implied universal negative.
-- **161 offline tests passing** (`PYTHONPATH=src python3 -m pytest tests/ -q`),
+- **190 offline tests passing** (`PYTHONPATH=src python3 -m pytest tests/ -q`),
   none requiring live network access.
 
 Contact-email parameters (`THAICITE_CONTACT_EMAIL`, optional
@@ -169,12 +169,37 @@ negation. Four structural moves, not more patches: `docs/KNOWN_ISSUES.md`'s "Rou
 has the full detail, including the honest remaining limitation on relation classification
 (finite antonym-pair list) and the confirmed-live ThaiJO endpoint (`sc01`, HTTP 200).
 
+## Round 4 (same day): problem-centered redesign — claim discipline, evidence-status layer, proposition-based relation, coverage truth
+
+A fourth, deeper red-team confirmed the single most dangerous bug class in the whole
+project — evidence merely *about* a claim (an objective/hypothesis sentence) being classified
+`SUPPORTS` and reaching `ADMIT` — plus a silent claim-substitution bug and a DOI-weaker-than-
+fuzzy-title-match bug. Four structural fixes landed (claim discipline, a new
+`evidence/statement_type.py` evidence-status layer, proposition-based relation with a new
+`QUALIFIES` label, and a richer coverage-state vocabulary). **Round 4's own final review then
+found 2 more real bugs in the fixes themselves** (a clause/negation-blind RESULT-cue matcher
+recreating the same bug class one layer down; a DOI exact-match shortcut with no substring-
+boundary check) — both fixed same-day. A real, still-open, lower-severity gap (double-negation
+mishandling, producing a false REJECT not a false ADMIT) is documented honestly, not fixed.
+Full detail: `docs/KNOWN_ISSUES.md`'s "Round 4" section.
+
+**Founder's own assessment after round 4**: this repeating pattern (fix a semantic-judgment
+bug → red-team finds the same category of error one layer down) is itself evidence that
+deterministic lexical pattern-matching is the wrong tool for genuinely semantic work
+(statement typing, proposition extraction, claim↔evidence relation) — planned next redesign
+moves this to an AI "Reader" role (shown only `claim`+`passage`, never asked to argue for the
+claim, to reduce confirmation bias) and an AI "Scout" role for query/concept expansion
+(replacing large synonym/antonym dictionaries), with all of round 4's deterministic logic
+demoted to a fallback/checker layer rather than the primary mechanism, and the deterministic
+Gate remaining the sole ADMIT/REJECT/HOLD authority regardless. Not yet implemented as of this
+note.
+
 ## Validation status — read before trusting this build
 
-All three rounds of fixes above are **unit-tested (161/161 passing) but not yet confirmed by a
+All four rounds of fixes above are **unit-tested (190/190 passing) but not yet confirmed by a
 full live 100-scenario adversarial re-run** — OpenAlex rate-limiting has kept that re-run
 incomplete since round 1 (30 PASS / 0 FAIL / 70 INCONCLUSIVE as of the last attempt), and
-rounds 2–3 have not been live-tested at that scale at all yet. Per this project's own honesty
+rounds 2–4 have not been live-tested at that scale at all yet. Per this project's own honesty
 tier (`ARCHITECTURE.md` §72's `Dr` label): this is a plausible, carefully-tested
 architecture, not yet a "proven better than baseline" result. See `docs/KNOWN_ISSUES.md` and
 `tests/golden/` for the full trail.

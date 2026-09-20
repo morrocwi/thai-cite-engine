@@ -146,12 +146,29 @@ def find_citations(context: str, max_results: int, debug: bool = False) -> int:
         print("Coverage -- ไม่พบงาน (nothing found), ภายใต้แหล่งที่ค้นได้เหล่านี้ (given these searchable sources):")
         for line in cov.format_coverage_lines(route_decision.coverage):
             print(line)
+        # A STALE or PLANNED-only (never actually confirmed SEARCHED_OK)
+        # result must never look identical to a genuine SEARCHED_OK empty
+        # result -- see core/coverage.py's module docstring.
         if cov.coverage_is_all_negative(route_decision.coverage):
-            print(
-                "  ** WARNING: every listed source was UNAVAILABLE/NOT_ATTEMPTED/"
-                "NOT_CONNECTED -- this 'not found' reflects a coverage failure, "
-                "not a confirmed absence. **"
-            )
+            if cov.coverage_has_stale(route_decision.coverage):
+                print(
+                    "  ** WARNING: no source reached a confirmed fresh SEARCHED_OK "
+                    "-- at least one source is STALE (searched, but against an "
+                    "old snapshot past its staleness threshold). This 'not found' "
+                    "is UNCONFIRMED, not a verified absence. **"
+                )
+            elif cov.coverage_has_unconfirmed_planned(route_decision.coverage):
+                print(
+                    "  ** WARNING: at least one source was never confirmed to "
+                    "have actually run (still PLANNED) -- this 'not found' is "
+                    "UNCONFIRMED, not a verified absence. **"
+                )
+            else:
+                print(
+                    "  ** WARNING: every listed source was UNAVAILABLE/NOT_ATTEMPTED/"
+                    "NOT_CONNECTED -- this 'not found' reflects a coverage failure, "
+                    "not a confirmed absence. **"
+                )
     else:
         print(f"Found {len(candidates)} candidate(s):\n")
         for i, candidate in enumerate(candidates, start=1):

@@ -178,14 +178,26 @@ class EvidenceLevel:
 
 
 class RelationLabel:
-    """Claim <-> evidence relation labels (ARCHITECTURE.md SS73/SS100)."""
+    """Claim <-> evidence relation labels (ARCHITECTURE.md SS73/SS100).
+
+    QUALIFIES (added 2026-09-20, round 4 relation-classification restructure
+    -- see `evidence/relation.py` module docstring): the evidence affirms
+    the claim's own directional relation, but only under a narrower scope,
+    condition, or population than the claim itself states (e.g. claim "X
+    improves Y" vs. evidence "X improves Y only among adults under 30").
+    Maps to `Decision.HOLD` in `evidence.verifier.gate_admission_decision()`
+    by default -- the claim as stated is broader than what this evidence
+    actually shows, which needs a human/caller decision, not an automatic
+    ADMIT or REJECT.
+    """
 
     SUPPORTS = "SUPPORTS"
     CHALLENGES = "CHALLENGES"
     CONTEXT_ONLY = "CONTEXT_ONLY"
     UNCLEAR = "UNCLEAR"
+    QUALIFIES = "QUALIFIES"
 
-    ALL = frozenset({SUPPORTS, CHALLENGES, CONTEXT_ONLY, UNCLEAR})
+    ALL = frozenset({SUPPORTS, CHALLENGES, CONTEXT_ONLY, UNCLEAR, QUALIFIES})
 
 
 class Decision:

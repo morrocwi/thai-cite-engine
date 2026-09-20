@@ -63,10 +63,25 @@ def test_coverage_is_all_negative_true_only_when_nothing_is_ok():
     ]
     assert cov.coverage_is_all_negative(all_bad) is True
 
-    one_ok = all_bad + [cov.CoverageEntry(source="C", status=cov.OK)]
+    one_ok = all_bad + [cov.CoverageEntry(source="C", status=cov.SEARCHED_OK)]
     assert cov.coverage_is_all_negative(one_ok) is False
 
+    # PLANNED (never confirmed) and STALE (confirmed, but against old data)
+    # are both still "negative" -- only a confirmed SEARCHED_OK flips it.
+    one_planned = all_bad + [cov.CoverageEntry(source="D", status=cov.PLANNED)]
+    assert cov.coverage_is_all_negative(one_planned) is True
+    one_stale = all_bad + [cov.CoverageEntry(source="E", status=cov.STALE)]
+    assert cov.coverage_is_all_negative(one_stale) is True
+
     assert cov.coverage_is_all_negative([]) is False  # empty is not "all negative"
+
+
+def test_coverage_has_stale_and_unconfirmed_planned_helpers():
+    assert cov.coverage_has_stale([cov.CoverageEntry(source="A", status=cov.STALE)]) is True
+    assert cov.coverage_has_stale([cov.CoverageEntry(source="A", status=cov.SEARCHED_OK)]) is False
+
+    assert cov.coverage_has_unconfirmed_planned([cov.CoverageEntry(source="A", status=cov.PLANNED)]) is True
+    assert cov.coverage_has_unconfirmed_planned([cov.CoverageEntry(source="A", status=cov.SEARCHED_OK)]) is False
 
 
 # ----------------------------------------------------- ThaiIndex staleness --
@@ -104,7 +119,7 @@ def test_endpoint_coverage_reports_ok_and_unavailable_independently(index):
 
     adapter = ThaiJOAdapter(index=index)
     entries = {e.source: e for e in adapter.coverage_entries()}
-    assert entries["THAIJO:sc01"].status == cov.OK
+    assert entries["THAIJO:sc01"].status == cov.SEARCHED_OK
     assert entries["THAIJO:li01"].status == cov.UNAVAILABLE
     assert "RATE_LIMITED" in entries["THAIJO:li01"].reason
     # An endpoint neither synced nor failed is still NOT_ATTEMPTED, not
@@ -244,9 +259,102 @@ def test_update_coverage_turns_errored_adapter_unavailable_not_masked_by_healthy
     by_source = {e.source: e for e in decision.coverage}
     assert by_source["OPENALEX"].status == cov.UNAVAILABLE
     assert "RATE_LIMITED" in by_source["OPENALEX"].reason
-    # A sibling adapter's a-priori OK on the SAME call is untouched by this
-    # evidence -- it just has no confirming evidence yet either way.
-    assert by_source["CROSSREF"].status == cov.OK
+    # A sibling adapter's a-priori PLANNED on the SAME call is untouched by
+    # this evidence -- it just has no confirming evidence yet either way.
+    assert by_source["CROSSREF"].status == cov.PLANNED
+
+
+# ---------------------------------------- WORKED EXAMPLE (round-4 task) ----
+# "query against a ThaiJO index that has real records but is stale (past the
+# 14-day threshold) and returns zero matches for this specific query --
+# confirm the coverage output now says STALE, not OK." This is the
+# end-to-end (`route()` -> `update_coverage()`) version of the worked
+# example above, which only exercised `ThaiJOAdapter.search()` directly;
+# this one exercises the full Coverage Readout a caller (cli.py/
+# mcp_server.py) actually sees.
+
+
+def test_worked_example_stale_index_with_real_records_surfaces_as_stale_not_ok():
+    from thaicite.adapters.crossref import CrossrefAdapter
+    from thaicite.adapters.openalex import OpenAlexAdapter
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        stale_index = ThaiIndex(Path(tmpdir) / "stale.db")
+        old = time.time() - (DEFAULT_STALE_THRESHOLD_S + 3600)  # >14 days old
+        # Real records exist in this snapshot -- this is NOT a never-synced
+        # index (that case is UNAVAILABLE, see the other worked example
+        # above); it genuinely has content, just old content.
+        _upsert(
+            stale_index,
+            endpoint="https://sc01.tci-thaijo.org/index.php/index/oai",
+            native_id="a1",
+            title="Unrelated botany survey",
+            harvested_at=old,
+        )
+        stale_index.save_endpoint_status(
+            code="sc01",
+            url="https://sc01.tci-thaijo.org/index.php/index/oai",
+            status="OK",
+            records_harvested=1,
+            synced_at=old,
+        )
+
+        thaijo_adapter = ThaiJOAdapter(index=stale_index)
+        adapters = [OpenAlexAdapter(), CrossrefAdapter(), thaijo_adapter]
+
+        # A query that genuinely matches nothing in this stale snapshot.
+        query = "การศึกษาไทยเรื่องประวัติศาสตร์"
+        decision = route(query, query, adapters)
+
+        # Confirm the a-priori state, before any search has run, is the
+        # new PLANNED (never the old OK).
+        by_source_before = {e.source: e for e in decision.coverage}
+        assert by_source_before["THAIJO"].status == cov.PLANNED
+
+        # Drive only ThaiJO directly (offline, no network) to isolate the
+        # exact bug scenario -- ThaiJOAdapter.search() knows its index is
+        # stale (`index_is_stale`) but, pre-fix, that signal never reached
+        # the coverage summary as anything other than a bare NOT_FOUND.
+        err = thaijo_adapter.search(query)
+        assert isinstance(err, AdapterError)
+        assert err.state == VerificationState.NOT_FOUND
+        assert err.coverage["index_is_stale"] is True
+        assert err.coverage["index_never_synced"] is False
+
+        fake_engine_result = {
+            "candidates": [],
+            "rejected": {},
+            "not_found_queries": {
+                query: {
+                    "state": VerificationState.NOT_FOUND,
+                    "note": "No adapter returned a record for this query.",
+                    "by_adapter": {
+                        "THAIJO": {
+                            "state": err.state,
+                            "message": err.message,
+                            "coverage": err.coverage,
+                        },
+                    },
+                }
+            },
+        }
+        decision.update_coverage(fake_engine_result)
+
+        by_source_after = {e.source: e for e in decision.coverage}
+        # THE ASSERTION THIS WORKED EXAMPLE EXISTS TO PROVE: STALE, not OK
+        # (the old vocabulary had no way to say anything other than OK
+        # here -- see this module's/`core/coverage.py`'s CONFIRMED BUG
+        # writeups).
+        assert by_source_after["THAIJO"].status == cov.STALE
+        assert by_source_after["THAIJO"].status != "OK"
+        assert "stale" in by_source_after["THAIJO"].reason.lower()
+
+        # And the caller-facing "nothing found" signal must reflect that
+        # this is NOT a confirmed fresh empty result.
+        assert cov.coverage_is_all_negative([by_source_after["THAIJO"]]) is True
+        assert cov.coverage_has_stale(decision.coverage) is True
+
+        stale_index.close()
 
 
 # ------------------------------------------------------------ end-to-end --
@@ -271,6 +379,8 @@ def test_discover_citations_empty_result_pairs_with_coverage_via_router(index, m
     assert result["candidates"] == []
     by_source = {e.source: e for e in decision.coverage}
     # ThaiJO's search() returned a NOT_FOUND AdapterError with coverage
-    # attached -- update_coverage() must not have silently marked THAIJO
-    # healthy just because OpenAlex/Crossref also came back NOT_FOUND.
-    assert by_source["THAIJO"].status in (cov.OK, cov.UNAVAILABLE)
+    # attached, flagging `index_never_synced` -- update_coverage() must
+    # resolve that to UNAVAILABLE, never silently marking THAIJO
+    # SEARCHED_OK just because OpenAlex/Crossref also came back NOT_FOUND.
+    assert by_source["THAIJO"].status == cov.UNAVAILABLE
+    assert "never been synced" in by_source["THAIJO"].reason

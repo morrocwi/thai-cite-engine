@@ -79,6 +79,7 @@ from thaicite.normalize.thai_relevance import classify_thai_relevance
 from thaicite.resolve.conflicts import apply_conflict_state
 from thaicite.resolve.identity import resolve_identities
 from thaicite.evidence.relation import classify_relation
+from thaicite.evidence.statement_type import classify_statement_type
 from thaicite.evidence.verifier import (
     VERIFY_MODE_DISCOVERY,
     VERIFY_MODE_IDENTITY,
@@ -132,8 +133,14 @@ def resolve_citations(
     cite_uses: list[CiteUse] = []
 
     for query in queries:
+        # `claim` must be the caller's actual, stated claim -- NEVER the
+        # citation/query string itself. `ContextContract.__post_init__`
+        # already raises when `claim` is empty in VERIFY mode; letting the
+        # citation string silently stand in for the claim here would defeat
+        # that check (a paper's own title/abstract can trivially SUPPORTS
+        # its own title). See module docstring / ValueError below.
         active_contract = context_contract or freeze_context(
-            claim=context or query,
+            claim=context,
             mode=ContractMode.VERIFY,
             created_before_search=False,
         )
@@ -167,11 +174,22 @@ def resolve_citations(
                 if err.state != VerificationState.NOT_FOUND
             }
             if non_not_found and not any_hit:
+                # `reason` picks the bucket ("a real transport error
+                # happened somewhere"), but `by_adapter` below carries EVERY
+                # adapter's evidence -- including a sibling that came back a
+                # genuine NOT_FOUND (Coverage Readout round-4 fix,
+                # 2026-09-20: this used to be filtered down to only the
+                # `non_not_found` adapters, silently dropping a sibling
+                # adapter's real "searched, found nothing" evidence -- see
+                # `routing/router.py::RouteDecision.update_coverage()`,
+                # which needs every adapter's `state`/`coverage` here to
+                # resolve its a-priori PLANNED entries correctly, not just
+                # the ones that errored).
                 rejected[f"query::{query}"] = {
                     "reason": "adapter_error",
                     "by_adapter": {
                         name: {"state": err.state, "message": err.message, "coverage": err.coverage}
-                        for name, err in non_not_found.items()
+                        for name, err in errors_by_adapter.items()
                     },
                 }
             else:
@@ -256,11 +274,13 @@ def _evaluate_work(
         EvidenceLevel.ABSTRACT if evidence_text.strip() else EvidenceLevel.METADATA
     )
     relation = classify_relation(evidence_text, active_contract.claim)
+    statement_type = classify_statement_type(evidence_text)
     decision, decision_debug = gate_admission_decision(
         work,
         relation,
         intended_relation=active_contract.intended_relation,
         mode=mode,
+        statement_type=statement_type,
     )
     cite_uses.append(
         CiteUse(
@@ -515,6 +535,11 @@ def discover_citations(
                 if err.state != VerificationState.NOT_FOUND
             }
             if non_not_found and not any_hit:
+                # See `resolve_citations()`'s matching branch above for why
+                # `by_adapter` carries EVERY adapter's evidence here, not
+                # just the ones that errored -- a sibling adapter's genuine
+                # NOT_FOUND must never be silently dropped (Coverage
+                # Readout round-4 fix, 2026-09-20).
                 not_found_queries[f"query::{query}"] = {
                     "state": "adapter_error",
                     "note": (
@@ -523,7 +548,7 @@ def discover_citations(
                     ),
                     "by_adapter": {
                         name: {"state": err.state, "message": err.message, "coverage": err.coverage}
-                        for name, err in non_not_found.items()
+                        for name, err in errors_by_adapter.items()
                     },
                 }
             else:

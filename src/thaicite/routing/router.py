@@ -218,6 +218,13 @@ class RouteDecision:
     adapter. Call `update_track_status()` with `resolve_citations()`'s
     return value once that call has actually happened, to fold in the real
     per-adapter evidence.
+
+    NOTE: `track_status`'s STATUS_OK/STATUS_DEGRADED/STATUS_NOT_QUERIED is a
+    separate, coarser 2-track (global/local) vocabulary from
+    `coverage`'s per-source PLANNED/SEARCHED_OK/STALE/UNAVAILABLE/
+    NOT_ATTEMPTED/NOT_CONNECTED (`core/coverage.py`) -- the two are not
+    meant to line up 1:1; `coverage` is the granular, per-source readout
+    this module's docstring and `core/coverage.py` describe.
     """
 
     domain: str
@@ -319,25 +326,52 @@ class RouteDecision:
         return self.track_status
 
     def update_coverage(self, engine_result: dict[str, Any]) -> list["cov.CoverageEntry"]:
-        """Refine `self.coverage`'s a-priori entries with real per-adapter
-        evidence from `engine_result` (same evidence sources as
+        """Refine `self.coverage`'s a-priori `PLANNED` entries with real
+        per-adapter evidence from `engine_result` (same evidence sources as
         `update_track_status()` above), AFTER `resolve_citations()`/
         `discover_citations()` has actually run.
 
-        An adapter-level entry (status `OK` a priori, meaning "will be
-        attempted") becomes `UNAVAILABLE` the moment a real transport error
-        (`VerificationState.ERROR_STATES`) is seen for it anywhere in
-        `engine_result`, with `reason` taken from that error's message --
-        mirroring `update_track_status()`'s "one bad adapter must never look
-        identical to a healthy one" rule, but at the coverage-row level
-        instead of the coarse global/local track level. Entries that were
-        already `NOT_ATTEMPTED`/`NOT_CONNECTED` (domain-excluded, not
-        configured, known-unconfigured-source) are left untouched -- no
-        amount of evidence about OTHER adapters changes what this router
-        itself decided not to route.
+        CONFIRMED BUG this fixes (round 4, 2026-09-20): the previous version
+        only ever downgraded an a-priori `OK` away when a real TRANSPORT
+        error (`VerificationState.ERROR_STATES`) was seen -- a genuine
+        NOT_FOUND (the adapter actually ran and found nothing) never
+        triggered any change at all, so a stale ThaiJO snapshot returning
+        zero matches stayed indistinguishable from a confirmed fresh
+        search, and even an ordinary "ran, found nothing" adapter never got
+        its a-priori status actually CONFIRMED by real evidence. Every
+        `PLANNED` entry is now resolved into exactly one of:
+
+          - `UNAVAILABLE` -- a real transport error
+            (`VerificationState.ERROR_STATES`) was seen for this adapter, OR
+            its NOT_FOUND `AdapterError.coverage` says its local snapshot
+            has never been synced at all (`index_never_synced`) -- a real
+            "cannot search this source at all" condition, not merely old
+            data.
+          - `STALE` -- a NOT_FOUND `AdapterError.coverage` says the
+            snapshot it searched is past its staleness threshold
+            (`index_is_stale`, and it WAS synced -- see above) -- the
+            search genuinely ran, but its answer reflects old data.
+          - `SEARCHED_OK` -- confirmed, real evidence that the adapter
+            actually ran: either it contributed a candidate/record
+            anywhere in this result, or it returned a plain, non-stale
+            NOT_FOUND (a genuine "searched, found nothing" outcome).
+
+        Precedence when more than one signal exists for the same adapter
+        (e.g. it errored on one query variant but found something on
+        another): UNAVAILABLE > STALE > SEARCHED_OK -- a real failure or a
+        known-stale answer must never be silently masked by a healthy
+        sibling result, mirroring `update_track_status()`'s "one bad
+        adapter must never look identical to a healthy one" rule, but at
+        the coverage-row level instead of the coarse global/local track
+        level. Entries that were already `NOT_ATTEMPTED`/`NOT_CONNECTED`
+        (domain-excluded, not configured, known-unconfigured-source) are
+        left untouched -- no amount of evidence about OTHER adapters
+        changes what this router itself decided not to route.
         """
         errored_adapters: dict[str, str] = {}
-        healthy_adapters: set[str] = set()
+        unavailable_adapters: dict[str, str] = {}
+        stale_adapters: dict[str, str] = {}
+        searched_ok_adapters: set[str] = set()
 
         for bucket_key in ("rejected", "not_found_queries"):
             bucket = engine_result.get(bucket_key) or {}
@@ -353,28 +387,56 @@ class RouteDecision:
                         errored_adapters[adapter_name] = (
                             f"{state}: {info.get('message', '')}".strip(": ")
                         )
+                    elif state == VerificationState.NOT_FOUND:
+                        # A genuine, executed search that found nothing --
+                        # but check whether the adapter itself flagged this
+                        # as an unreliable/stale answer (ThaiJO's
+                        # `coverage_summary()`; other adapters simply have
+                        # no `coverage` dict, i.e. no such caveat).
+                        coverage_detail = info.get("coverage") or {}
+                        if coverage_detail.get("index_never_synced"):
+                            unavailable_adapters[adapter_name] = (
+                                f"{state}: local index has never been synced "
+                                "-- a harvest/sync is needed before this "
+                                "source can be searched at all"
+                            )
+                        elif coverage_detail.get("index_is_stale"):
+                            stale_adapters[adapter_name] = (
+                                f"{state}: searched, but the local snapshot "
+                                "is past its staleness threshold -- this "
+                                "reflects old data, not a live guarantee"
+                            )
+                        else:
+                            searched_ok_adapters.add(adapter_name)
 
         for bucket_key in ("verified", "candidates"):
             for item in engine_result.get(bucket_key) or []:
                 for candidate in getattr(item.work, "candidates", []):
                     name = getattr(candidate, "source_adapter", None)
                     if name:
-                        healthy_adapters.add(name)
+                        searched_ok_adapters.add(name)
 
         rejected = engine_result.get("rejected") or {}
         for key, entry in rejected.items():
             if not isinstance(entry, dict) or entry.get("reason") == "adapter_error":
                 continue
+            # key is "<source_adapter>:<source_record_id>" for a real
+            # (non-transport-error) rejection -- that adapter reached and
+            # returned a real record, so it is confirmed to have searched.
             adapter_name = key.split(":", 1)[0]
             if adapter_name:
-                healthy_adapters.add(adapter_name)
+                searched_ok_adapters.add(adapter_name)
 
         refined: list[cov.CoverageEntry] = []
         for entry in self.coverage:
             adapter_name = entry.source.split(":", 1)[0]
-            if entry.status not in (cov.OK,) or adapter_name not in (
-                errored_adapters.keys() | healthy_adapters
-            ):
+            has_evidence = adapter_name in (
+                errored_adapters.keys()
+                | unavailable_adapters.keys()
+                | stale_adapters.keys()
+                | searched_ok_adapters
+            )
+            if entry.status != cov.PLANNED or not has_evidence:
                 refined.append(entry)
                 continue
             if adapter_name in errored_adapters:
@@ -386,8 +448,33 @@ class RouteDecision:
                         detail=entry.detail,
                     )
                 )
-            else:  # confirmed healthy -- stays OK, now with real evidence
-                refined.append(entry)
+            elif adapter_name in unavailable_adapters:
+                refined.append(
+                    cov.CoverageEntry(
+                        source=entry.source,
+                        status=cov.UNAVAILABLE,
+                        reason=unavailable_adapters[adapter_name],
+                        detail=entry.detail,
+                    )
+                )
+            elif adapter_name in stale_adapters:
+                refined.append(
+                    cov.CoverageEntry(
+                        source=entry.source,
+                        status=cov.STALE,
+                        reason=stale_adapters[adapter_name],
+                        detail=entry.detail,
+                    )
+                )
+            else:  # confirmed, real evidence the adapter genuinely searched
+                refined.append(
+                    cov.CoverageEntry(
+                        source=entry.source,
+                        status=cov.SEARCHED_OK,
+                        reason="confirmed: genuinely searched, real evidence seen",
+                        detail=entry.detail,
+                    )
+                )
 
         self.coverage = refined
         return self.coverage
@@ -487,7 +574,7 @@ def _build_coverage(
         entries.append(
             cov.CoverageEntry(
                 source=name,
-                status=cov.OK,
+                status=cov.PLANNED,
                 reason="routed in for this domain -- will be attempted "
                 "(a-priori; see RouteDecision.update_coverage())",
             )

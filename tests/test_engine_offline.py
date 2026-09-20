@@ -91,13 +91,16 @@ def test_resolve_citations_one_failing_adapter_does_not_block_a_working_one():
         authors=["Kaiming He", "Xiangyu Zhang"],
         year=2016,
         doi="10.1109/CVPR.2016.90",
-        abstract="We present a residual learning framework to ease the training of deep networks.",
+        abstract=(
+            "We found that a residual learning framework eases the training "
+            "of deep networks."
+        ),
     )
     working = _WorkingAdapter([work_json])
     failing = _AlwaysFailingAdapter("CROSSREF", state=VerificationState.TIMEOUT)
 
     result = resolve_citations(
-        context="",
+        context="Residual connections ease the training of very deep image-recognition networks.",
         queries=["He K, Zhang X (2016). Deep Residual Learning for Image Recognition."],
         adapters=[working, failing],
     )
@@ -113,7 +116,7 @@ def test_resolve_citations_all_adapters_failing_surfaces_adapter_error_not_not_f
     failing_b = _AlwaysFailingAdapter("PUBMED", state=VerificationState.ACCESS_DENIED)
 
     result = resolve_citations(
-        context="", queries=["some claim nobody can verify right now"], adapters=[failing_a, failing_b]
+        context="a claim about this topic", queries=["some claim nobody can verify right now"], adapters=[failing_a, failing_b]
     )
 
     assert result["verified"] == []
@@ -134,7 +137,7 @@ def test_resolve_citations_mixed_not_found_and_error_prefers_adapter_error_label
     timeout_adapter = _AlwaysFailingAdapter("CROSSREF", state=VerificationState.TIMEOUT)
 
     result = resolve_citations(
-        context="", queries=["an obscure claim"], adapters=[not_found_adapter, timeout_adapter]
+        context="a claim about this obscure topic", queries=["an obscure claim"], adapters=[not_found_adapter, timeout_adapter]
     )
     assert "query::an obscure claim" in result["rejected"]
     assert result["rejected"]["query::an obscure claim"]["reason"] == "adapter_error"
@@ -191,7 +194,7 @@ def test_router_selected_adapters_then_resolve_citations_thai_first_and_isolated
     ]
 
     query = "การศึกษาไทยเรื่องประวัติศาสตร์เชียงใหม่"
-    result = resolve_citations(context="", queries=[query], adapters=routed)
+    result = resolve_citations(context=query, queries=[query], adapters=routed)
 
     # The query never ends up bucketed purely as an adapter_error -- the
     # real ThaiJO hit was actually evaluated (verified or a real per-work

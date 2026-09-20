@@ -138,22 +138,44 @@ def find_cites(context: str, max_results: int = 10) -> dict[str, Any]:
                                           # (routing/query_planner.py)
           "coverage": [ {...} ],         # Coverage Readout (core/coverage.py,
                                           # founder-approved redesign
-                                          # 2026-09-20): one row per adapter
-                                          # (+ ThaiJO's per-endpoint rows)
-                                          # tagged OK/UNAVAILABLE/
-                                          # NOT_ATTEMPTED/NOT_CONNECTED.
-                                          # ALWAYS present, but READ THIS
-                                          # FIELD whenever "candidates" is
-                                          # empty -- "no candidates" must
-                                          # never be read as a universal
-                                          # negative without checking which
-                                          # sources this `coverage` says
-                                          # were actually searchable.
-          "coverage_all_negative": bool, # True only when EVERY coverage row
-                                          # is non-OK -- i.e. this result
-                                          # reflects a coverage failure, not
-                                          # a confirmed "searched and found
-                                          # nothing".
+                                          # 2026-09-20, extended round 4):
+                                          # one row per adapter (+ ThaiJO's
+                                          # per-endpoint rows) tagged
+                                          # PLANNED/SEARCHED_OK/STALE/
+                                          # UNAVAILABLE/NOT_ATTEMPTED/
+                                          # NOT_CONNECTED. ALWAYS present,
+                                          # but READ THIS FIELD whenever
+                                          # "candidates" is empty -- "no
+                                          # candidates" must never be read
+                                          # as a universal negative without
+                                          # checking which sources this
+                                          # `coverage` says were actually,
+                                          # freshly (SEARCHED_OK) searched.
+                                          # A row can also be STALE
+                                          # (genuinely searched, but against
+                                          # an old snapshot past its
+                                          # staleness threshold -- NOT the
+                                          # same confidence as SEARCHED_OK)
+                                          # or still PLANNED (routed in, but
+                                          # never confirmed to have actually
+                                          # run).
+          "coverage_all_negative": bool, # True only when NO coverage row
+                                          # ever reached a confirmed fresh
+                                          # SEARCHED_OK -- i.e. this result
+                                          # reflects a coverage failure (or a
+                                          # STALE-only / PLANNED-only
+                                          # result), not a confirmed
+                                          # "searched fresh and found
+                                          # nothing". See
+                                          # `core.coverage.coverage_is_all_negative()`.
+          "coverage_has_stale": bool,    # True when at least one coverage
+                                          # row is STALE -- distinguishes
+                                          # "searched, but against old data"
+                                          # from a harder coverage failure
+                                          # (UNAVAILABLE/NOT_ATTEMPTED/
+                                          # NOT_CONNECTED/PLANNED-only), so a
+                                          # caller can render/branch on the
+                                          # two differently.
         }
 
     This is DISCOVERY mode (`core.engine.discover_citations()`): it does
@@ -188,6 +210,7 @@ def find_cites(context: str, max_results: int = 10) -> dict[str, Any]:
         "query_family": result["query_family"],
         "coverage": [e.to_dict() for e in route_decision.coverage],
         "coverage_all_negative": cov.coverage_is_all_negative(route_decision.coverage),
+        "coverage_has_stale": cov.coverage_has_stale(route_decision.coverage),
     }
 
 
@@ -202,32 +225,38 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
     same admission gates (identity/content/scope) apply; there is no
     separate, weaker verification path.
 
-    **Two distinct roles, confirmed 2026-09-20 (Task 3) -- no separate
-    `claim` parameter is needed, and adding one would duplicate `context`
-    rather than clarify anything:**
+    **Two distinct roles, `context` is REQUIRED and is NEVER defaulted to
+    `citation` (2026-09-20, round 4 fix -- see `core/engine.py`'s module
+    docstring):**
       - `citation` is the IDENTITY target -- what `gate_g6_identity_match`
         compares the returned candidate's title/authors against, to answer
         "is this candidate the SAME work as this citation string?"
       - `context` is the CLAIM -- `resolve_citations()` builds its
-        `ContextContract` as `claim=(context or citation)` internally
-        (see `core/engine.py::resolve_citations`), and that `claim` is
-        exactly what `evidence.relation.classify_relation()` compares the
+        `ContextContract` as `claim=context` internally (see
+        `core/engine.py::resolve_citations`), and that `claim` is exactly
+        what `evidence.relation.classify_relation()` compares the
         candidate's evidence text against, and what
         `gate_admission_decision()` checks the resulting relation against
-        for the ADMIT/REJECT/HOLD call. This satisfies `ContextContract`'s
-        own `mode=ContractMode.VERIFY` requirement (Task 1: VERIFY REQUIRES
-        a non-empty claim, enforced in `ContextContract.__post_init__`) as
-        long as `context` or `citation` is non-empty -- a caller passing
-        both blank gets a clear `ValueError` from that constructor, not a
-        silent pass-through.
-      A caller who wants "is source X evidence for claim Y" (Y different
-      in wording from the plain citation string) already expresses that by
-      passing the claim as `context` and the citation string as `citation`
-      -- that is what this signature already does; no third parameter is
-      needed for the relation check to be meaningful.
+        for the ADMIT/REJECT/HOLD call. `context` must be the caller's own
+        stated claim, never the citation string itself -- `citation`
+        answers "which work", `context` answers "which claim", and
+        collapsing the two would let a paper's own title/abstract
+        trivially SUPPORTS its own title with the caller never having
+        stated what they actually wanted to claim.
+      A caller who wants "is source X evidence for claim Y" already
+      expresses that by passing the claim as `context` and the citation
+      string as `citation` -- that is what this signature already does; no
+      third parameter is needed for the relation check to be meaningful.
+      A caller who supplies an empty/blank `context` gets a clear
+      `ValueError` (raised by `ContextContract.__post_init__` via
+      `core/engine.py::resolve_citations`, not a second competing check
+      here) instead of `context` silently falling back to `citation`.
 
     Args:
         context: the claim the citation is meant to support (see above).
+            REQUIRED -- must be non-empty and distinct in purpose from
+            `citation` (it may coincidentally share text with it, but it
+            is never derived FROM it).
         citation: the citation string to verify (title, DOI, or free
             text) -- the identity target (see above).
 
@@ -269,17 +298,74 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
                                      # checking which sources were actually
                                      # searchable.
           "coverage_all_negative": bool,
+          "coverage_has_stale": bool, # same meaning as find_cites()'s field.
+          "error": str,              # present ONLY when `context` was
+                                      # missing/blank -- a clear, actionable
+                                      # message explaining that VERIFY mode
+                                      # requires an explicit claim distinct
+                                      # from `citation`, and no fallback was
+                                      # applied. Every other key above is
+                                      # still present but hollow (verified
+                                      # False, everything else empty/None)
+                                      # so callers that only check `verified`
+                                      # never mistake this for "not found".
         }
+
+    Raises:
+        Nothing for a missing/blank `context` -- that is caught here and
+        turned into the `error` key above so an MCP/CLI caller gets an
+        actionable message instead of an uncaught `ValueError` traceback.
     """
+    if not context or not str(context).strip():
+        return {
+            "verified": False,
+            "identity_verified": False,
+            "decision": None,
+            "citation": None,
+            "rejected": {},
+            "held": {},
+            "not_found": {},
+            "coverage": [],
+            "coverage_all_negative": False,
+            "coverage_has_stale": False,
+            "error": (
+                "verify_cite() requires an explicit, non-empty `context` "
+                "(the claim this citation is meant to support) -- it is "
+                "never derived from `citation` itself. Pass the actual "
+                "claim you want to check this citation as evidence for; "
+                "if you only have a broad topic with no specific claim, "
+                "use find_cites()/discover_citations() instead."
+            ),
+        }
+
     adapters = _default_adapters()
     route_decision = route(context=context, query=citation, available_adapters=adapters)
-    result = resolve_citations(
-        context=context, queries=[citation], adapters=route_decision.adapters
-    )
+    try:
+        result = resolve_citations(
+            context=context, queries=[citation], adapters=route_decision.adapters
+        )
+    except ValueError as exc:
+        return {
+            "verified": False,
+            "identity_verified": False,
+            "decision": None,
+            "citation": None,
+            "rejected": {},
+            "held": {},
+            "not_found": {},
+            "coverage": [],
+            "coverage_all_negative": False,
+            "coverage_has_stale": False,
+            "error": (
+                "VERIFY requires an explicit claim distinct from the "
+                f"citation identity target: {exc}"
+            ),
+        }
     route_decision.update_track_status(result)
     route_decision.update_coverage(result)
     coverage_dicts = [e.to_dict() for e in route_decision.coverage]
     coverage_all_negative = cov.coverage_is_all_negative(route_decision.coverage)
+    coverage_has_stale = cov.coverage_has_stale(route_decision.coverage)
 
     identity_verified = any(
         cite_use.work.state == "VERIFIED" for cite_use in result["cite_uses"]
@@ -302,6 +388,7 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
             "not_found": {},
             "coverage": coverage_dicts,
             "coverage_all_negative": coverage_all_negative,
+            "coverage_has_stale": coverage_has_stale,
         }
 
     return {
@@ -316,6 +403,7 @@ def verify_cite(context: str, citation: str) -> dict[str, Any]:
         "not_found": result["not_found_queries"],
         "coverage": coverage_dicts,
         "coverage_all_negative": coverage_all_negative,
+        "coverage_has_stale": coverage_has_stale,
     }
 
 

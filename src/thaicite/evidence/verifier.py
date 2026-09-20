@@ -48,6 +48,11 @@ import re
 from difflib import SequenceMatcher
 
 from thaicite.core.models import CanonicalWork, Decision, RelationLabel, VerificationState
+from thaicite.evidence.statement_type import (
+    FINDING_STATEMENT_TYPES,
+    StatementType,
+    classify_statement_type,
+)
 from thaicite.normalize.tokenize import tokenize as _shared_tokenize
 from thaicite.resolve.identity import bibliographic_exact_match, exact_identifier_match
 
@@ -172,17 +177,116 @@ def gate_g5_metadata_fetched(work: CanonicalWork) -> bool:
     return any((c.abstract and c.abstract.strip()) or c.raw_metadata for c in work.candidates)
 
 
+def _normalize_identifier(value: str | None) -> str:
+    """Normalize an identifier string for exact comparison: strip, lowercase,
+    and drop a few common non-semantic wrapper prefixes (e.g. a caller
+    pasting a full DOI URL instead of the bare DOI). This is NOT a fuzzy
+    match -- it only removes formatting noise around an otherwise-exact
+    identifier, never edits the identifier's own content.
+    """
+    v = (value or "").strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:", "pmid:", "pmcid:"):
+        if v.startswith(prefix):
+            v = v[len(prefix):]
+    return v.strip()
+
+
+def _exact_identifier_shortcut(work: CanonicalWork, query: str) -> tuple[bool, dict] | None:
+    """PRIORITY-1 check for `gate_g6_identity_match`: does the (normalized)
+    `query` string exactly match -- or exactly contain as a distinct
+    identifier substring -- one of the candidate's own real identifier
+    fields (doi/pmid/pmcid/source_record_id)?
+
+    A real, exact identifier match (a caller citing "10.1038/171737a0" and
+    the candidate's own `doi` field being exactly that) is strictly
+    STRONGER evidence of identity than any fuzzy title/author overlap --
+    it must never be treated as weaker just because it shares zero title
+    tokens with a differently-worded title. When this fires, the fuzzy
+    title/author matcher below is not even run for the identity decision.
+
+    Returns `(True, debug)` on a match, or `None` when no identifier field
+    lines up at all (in which case the caller falls through to the
+    existing structured bibliographic match, unchanged).
+    """
+    q_norm = _normalize_identifier(query)
+    if not q_norm:
+        return None
+
+    primary = work.primary
+    id_fields = {
+        "doi": primary.doi,
+        "pmid": primary.pmid,
+        "pmcid": primary.pmcid,
+        "source_record_id": primary.source_record_id,
+    }
+    for field_name, field_value in id_fields.items():
+        field_norm = _normalize_identifier(field_value)
+        if not field_norm:
+            continue
+        # Exact match, or the normalized query contains the candidate's
+        # normalized identifier as a DISTINCT, BOUNDARY-DELIMITED substring
+        # (e.g. a citation string that embeds the bare DOI alongside other
+        # text). A plain (boundary-unaware) substring check is NOT safe:
+        # two different DOIs where one is a literal prefix of the other
+        # (common in practice -- corrections/versions/same-issue neighbors
+        # often share a DOI prefix, e.g. "10.1234/abcd" vs "10.1234/abcd2")
+        # would otherwise falsely match. Require that the character
+        # immediately before and after the match, if any, is not
+        # alphanumeric -- i.e. the identifier is not itself a fragment of a
+        # longer identifier string. Fixed 2026-09-20 after a live-reproduced
+        # false positive: candidate.doi="10.1234/abcd" (unrelated title)
+        # vs query="10.1234/abcd2" was wrongly accepted before this fix.
+        if q_norm == field_norm:
+            return True, {
+                "reason": "exact_identifier_match",
+                "matched_field": field_name,
+                "matched_value": field_value,
+            }
+        if len(field_norm) >= 6:
+            idx = q_norm.find(field_norm)
+            if idx != -1:
+                before_ok = idx == 0 or not q_norm[idx - 1].isalnum()
+                after_pos = idx + len(field_norm)
+                after_ok = after_pos == len(q_norm) or not q_norm[after_pos].isalnum()
+                if before_ok and after_ok:
+                    return True, {
+                        "reason": "exact_identifier_match",
+                        "matched_field": field_name,
+                        "matched_value": field_value,
+                    }
+    return None
+
+
 def gate_g6_identity_match(work: CanonicalWork, query: str) -> tuple[bool, dict]:
     """REQUIRED gate: does this candidate correspond to the citation being
     verified (`query`), not merely to the free-text `context`?
 
-    Real bibliographic-identity check: normalized token-set overlap on the
-    TITLE specifically (candidate title vs. the query citation string
-    itself) plus author-surname overlap where authors are available. A
-    single shared generic word is never enough to pass -- at least two
-    real shared title tokens are required unless a genuine author-surname
-    match is also present.
+    Checked in priority order (2026-09-20 exact-identifier-shortcut fix):
+      1. Exact identifier match -- `query`, once trimmed/normalized,
+         exactly matches (or exactly contains as a distinct identifier
+         substring) the candidate's own doi/pmid/pmcid/source_record_id.
+         PASSES IMMEDIATELY; the fuzzy matcher below never runs. A real
+         identifier match is strictly stronger evidence than fuzzy title
+         overlap, so it must never be gated behind it or weakened by it.
+      2. Otherwise, the existing structured bibliographic match: normalized
+         token-set overlap on the TITLE specifically (candidate title vs.
+         the query citation string itself) plus author-surname overlap
+         where authors are available. A single shared generic word is
+         never enough to pass -- at least two real shared title tokens are
+         required unless a genuine author-surname match is also present.
     """
+    if not query or not query.strip():
+        # No query citation string to compare against at all (a caller
+        # invoked the pipeline with only free-text context) -- identity
+        # cannot be checked here. Fail closed rather than silently passing,
+        # since VERIFIED must never be reached without a real identity
+        # check having actually run.
+        return False, {"reason": "no_query_to_compare_against"}
+
+    exact_match = _exact_identifier_shortcut(work, query)
+    if exact_match is not None:
+        return exact_match
+
     primary = work.primary
     title_ratio, shared_tokens = _title_token_overlap_ratio(query, primary.title or "")
     seq_ratio = SequenceMatcher(
@@ -196,15 +300,6 @@ def gate_g6_identity_match(work: CanonicalWork, query: str) -> tuple[bool, dict]
         "title_seq_ratio": round(seq_ratio, 3),
         "author_surname_match": author_match,
     }
-
-    if not query or not query.strip():
-        # No query citation string to compare against at all (a caller
-        # invoked the pipeline with only free-text context) -- identity
-        # cannot be checked here. Fail closed rather than silently passing,
-        # since VERIFIED must never be reached without a real identity
-        # check having actually run.
-        debug["reason"] = "no_query_to_compare_against"
-        return False, debug
 
     # A lone coincidental shared generic word is never sufficient, with or
     # without a similarity ratio clearing threshold on a short title.
@@ -452,6 +547,7 @@ def gate_admission_decision(
     relation: str,
     intended_relation: str = RelationLabel.SUPPORTS,
     mode: str = VERIFY_MODE_IDENTITY,
+    statement_type: StatementType | None = None,
 ) -> tuple[str, dict]:
     """Deterministic 3-way ADMIT/REJECT/HOLD gate (ARCHITECTURE.md SS89,
     SS98) -- an additional outcome layer on top of `verify()`'s existing
@@ -466,7 +562,41 @@ def gate_admission_decision(
     LLM-or-heuristic layer produced `relation`, and only THIS function,
     a plain deterministic mapping, produces `decision`.
 
+    `statement_type` (from `evidence/statement_type.py::
+    classify_statement_type`, P0 fix 2026-09-20) is an INDEPENDENT,
+    additional input that answers a different question than `relation`:
+    not "does this passage's topic vocabulary support/challenge the
+    claim", but "did this passage report a finding at all, or does it
+    merely discuss/examine/hypothesize about the claim (OBJECTIVE,
+    HYPOTHESIS, BACKGROUND, METHOD, LIMITATION, PRIOR_WORK, UNKNOWN)?"
+    Only `RESULT` or `CONCLUSION` (`evidence.statement_type
+    .FINDING_STATEMENT_TYPES`) may ever lead to ADMIT, REGARDLESS of what
+    `relation` says -- a passage that merely discusses a claim can share
+    every topic term the claim uses with no negation/reversal signal
+    nearby, which `classify_relation()` alone would call SUPPORTS, even
+    though no finding was ever reported (the confirmed bug this layer
+    fixes). This check runs BEFORE/ALONGSIDE the relation-label check
+    below, not instead of it: a RESULT/CONCLUSION passage still needs a
+    real SUPPORTS relation to ADMIT. `statement_type` only ever NARROWS
+    what could ADMIT, never widens it -- when it fails to clear the check
+    it produces HOLD, not REJECT (no finding reported yet is a
+    resolution/access limitation, not evidence of a contradiction), and
+    a REJECTED `work.state` still reaches REJECT exactly as before this
+    layer, whatever `statement_type` says. Passing `statement_type=None`
+    (the default) skips this layer entirely, for callers that have not
+    computed a statement type yet -- see `core/engine.py`'s call site for
+    the only caller that supplies it end-to-end.
+
     Mapping (ARCHITECTURE.md SS89 examples preserved verbatim):
+      VERIFIED + statement_type given and not RESULT/CONCLUSION -> HOLD
+        (no finding reported to evaluate yet -- checked first)
+      relation == QUALIFIES                                  -> HOLD
+        (2026-09-20 round 4: the evidence affirms the claim's own
+        direction under a narrower scope/condition/population than
+        the claim states -- needs a human/caller decision, never an
+        automatic ADMIT or REJECT; checked before the directional
+        match/mismatch check below, for every state that could
+        otherwise reach ADMIT)
       VERIFIED + relation matches the intended use          -> ADMIT
       VERIFIED + relation is a real directional mismatch
         (e.g. relation=CHALLENGES when intended=SUPPORTS)   -> REJECT
@@ -485,7 +615,8 @@ def gate_admission_decision(
       any earlier pipeline state (DISCOVERED/IDENTIFIED/
         METADATA_VERIFIED/CONTENT_FETCHED/CONTEXT_MATCHED)
         with a clear relation already available                  -> ADMIT
-        (per SS89: "CONTENT_FETCHED-with-clear-relation -> ADMIT")
+        (per SS89: "CONTENT_FETCHED-with-clear-relation -> ADMIT",
+        also subject to the statement_type check above)
       any earlier pipeline state otherwise                        -> HOLD
 
     Returns:
@@ -498,6 +629,7 @@ def gate_admission_decision(
         "work_state": work.state,
         "relation": relation,
         "intended_relation": intended_relation,
+        "statement_type": statement_type,
     }
 
     if work.state == VerificationState.CONFLICT:
@@ -531,6 +663,37 @@ def gate_admission_decision(
         failed_gates = [name for name, passed in work.gate_results.items() if not passed]
         debug["reason"] = f"failed_gate(s):{','.join(failed_gates) or 'unknown'}"
         return Decision.REJECT, debug
+
+    # Statement-Type layer (P0 fix, see docstring above): only a passage
+    # that actually reported a finding (RESULT/CONCLUSION) may ever reach
+    # ADMIT, no matter what `relation` says. Checked BEFORE the
+    # relation-label check below, for every state that could otherwise
+    # reach ADMIT -- this only ever narrows the outcome to HOLD, never
+    # widens it, and never fires when `statement_type` was not supplied.
+    if (
+        statement_type is not None
+        and statement_type not in FINDING_STATEMENT_TYPES
+        and work.state
+        not in (
+            VerificationState.CONFLICT,
+            VerificationState.NOT_FOUND,
+            VerificationState.REJECTED,
+            *VerificationState.ERROR_STATES,
+        )
+    ):
+        debug["reason"] = (
+            f"statement_type={statement_type}, no finding reported to evaluate"
+        )
+        return Decision.HOLD, debug
+
+    # QUALIFIES layer (round 4, 2026-09-20): a narrower-scope-than-claimed
+    # relation is never an automatic ADMIT or REJECT -- it needs a human/
+    # caller decision about whether the narrower scope is acceptable for
+    # this use. Checked before the directional match/mismatch logic below,
+    # for every state that could otherwise reach ADMIT.
+    if relation == RelationLabel.QUALIFIES:
+        debug["reason"] = "relation_QUALIFIES_narrower_scope_than_claim_needs_human_decision"
+        return Decision.HOLD, debug
 
     directional_and_clear = (
         relation in (RelationLabel.SUPPORTS, RelationLabel.CHALLENGES)
