@@ -1,4 +1,4 @@
-# Thai Cite Engine — Architecture
+# ThaiCite — Architecture
 
 > Status: design document. **Two parts, one system.** Part I (§0–43) is the
 > full long-term target architecture, as originally briefed. Part II (§44–65)
@@ -13,7 +13,7 @@
 
 ## 0. Naming and explicit exclusions
 
-"Thai Cite Engine" is a **temporary/working name** (ชื่อชั่วคราว), not
+"ThaiCite" is a **temporary/working name** (ชื่อชั่วคราว), not
 necessarily final.
 
 The architecture is deliberately locked narrow. This system is explicitly
@@ -28,7 +28,7 @@ It is a standalone Git repository that does exactly one job well.
 
 ## 1. What this system is
 
-Thai Cite Engine is a standalone system with one job:
+ThaiCite is a standalone system with one job:
 
 > **Context in → Verified citation list out.**
 
@@ -143,7 +143,7 @@ System output does not need to be numerous. If a user asks for 10 citations
 but the system can genuinely verify only 4, the system returns 4 — it must
 never fabricate or pad in the remaining 6 just to hit the requested count.
 
-This is the key distinction between Thai Cite Engine and a generic "AI finds
+This is the key distinction between ThaiCite and a generic "AI finds
 papers" tool: the goal is not to make the AI answer as much as possible, but
 to make whatever it does output **traceable, genuinely sourced, and hard to
 let slip out of the model's imagination.**
@@ -849,7 +849,7 @@ Output                          → citation list only
 
 ## 41. Final System Definition
 
-Thai Cite Engine is not a new research database. It is:
+ThaiCite is not a new research database. It is:
 
 ```text
 Federated scholarly citation resolver
@@ -1124,13 +1124,13 @@ Summary:
 ## 45. Deployment architecture — Engine, not Skill
 
 If the intent is the same pattern as **mimi-remote** (a runtime resident on
-the machine that an AI calls from a session), Thai Cite Engine should be
+the machine that an AI calls from a session), ThaiCite should be
 designed that way directly, rather than as a Skill alone.
 
 ```text
 GitHub Repository
       ↓ install once
-Thai Cite Engine
+ThaiCite
       ↓
 Local Engine / Service
       ├── CLI
@@ -1191,7 +1191,7 @@ find_citations(context="...")
 mimi-remote's approach (per its README) is a resident/local runtime plus a
 standalone Skill that helps AI install/manage that runtime — the skill is not
 the engine itself, it's an interface/installer wrapped around the engine.
-Thai Cite Engine can use the same pattern:
+ThaiCite can use the same pattern:
 ```text
 GitHub
 ├── Engine
@@ -1233,7 +1233,7 @@ PMC, or DataCite — the AI never needs to know.
 
 It can also be installed as a **remote service**:
 ```text
-AI session → HTTPS → api.thaicite... → Thai Cite Engine
+AI session → HTTPS → api.thaicite... → ThaiCite
 ```
 Advantage: every machine can call it immediately without installing a local
 database everywhere. The architecture should support both modes from the same
@@ -1257,11 +1257,11 @@ TNRR/API credentials can stay on the machine, and it can be tried against
 any AI coding assistant immediately. Once stable, deploy a server without
 changing the core.
 
-So: **Thai Cite Engine is a standalone scholarly citation tool/service, not a
+So: **ThaiCite is a standalone scholarly citation tool/service, not a
 Skill** — but it ships with a **Skill + MCP wrapper** so AI can call it from a
 session like a built-in capability:
 ```text
-Git Repo → install once → Thai Cite Engine running locally
+Git Repo → install once → ThaiCite running locally
          → MCP/Tool registered → any AI session can call it
          → Context → Thai Cite → Cite list
 ```
@@ -1330,7 +1330,7 @@ faster," not critical thinking. This is **claim–citation hallucination**, and
 it is more dangerous than a fake paper name, because the citation *looks*
 completely legitimate and a human reviewer may not catch it.
 
-So if Thai Cite Engine stops at:
+So if ThaiCite stops at:
 ```text
 Real paper found → VERIFIED
 ```
@@ -1424,10 +1424,10 @@ and English — especially Thailand-related work, since the data sits across
 both Thai and international ecosystems.
 
 **Also strong fit:** an organization that wants an AI writer forbidden from
-inventing its own citations. Thai Cite Engine can become a **mandatory
+inventing its own citations. ThaiCite can become a **mandatory
 citation gateway**:
 ```text
-AI Writer → needs a citation → Thai Cite Engine → Verified citation
+AI Writer → needs a citation → ThaiCite → Verified citation
 ```
 If the engine returns nothing, the AI has no right to cite anything. This is
 a strong use case.
@@ -1439,7 +1439,7 @@ be heavier than necessary.
 **Not a good fit** for a systematic review that must certify "searched
 completely per protocol," while the system does not yet cover subscription
 databases such as Scopus/Web of Science/Embase/CINAHL/PsycINFO depending on
-field. In that case Thai Cite Engine helps with discovery/verification but
+field. In that case ThaiCite helps with discovery/verification but
 should not claim to substitute for a systematic-review search protocol.
 
 **Not a good fit** for a user wanting a ready-made academic conclusion,

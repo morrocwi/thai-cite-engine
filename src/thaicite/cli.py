@@ -130,7 +130,7 @@ def find_citations(context: str, max_results: int, debug: bool = False) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="thaicite",
-        description="Thai Cite Engine CLI -- find verified citations for a context.",
+        description="ThaiCite CLI -- find verified citations for a context.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

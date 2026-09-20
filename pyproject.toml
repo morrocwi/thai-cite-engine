@@ -1,7 +1,7 @@
 [project]
 name = "thaicite"
 version = "0.1.0"
-description = "Thai Cite Engine -- v0.1 concept-validation prototype (hallucination-firewall core)"
+description = "ThaiCite -- v0.1 concept-validation prototype (hallucination-firewall core)"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [

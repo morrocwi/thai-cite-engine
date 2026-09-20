@@ -6,7 +6,7 @@
 > below. The core invariants this note originally set out to test remain
 > unchanged and unweakened throughout that growth.
 
-This is the Thai Cite Engine's v1 build. Its core purpose is still to prove
+This is ThaiCite's v1 build. Its core purpose is still to prove
 the "AI never becomes the source" invariant holds under real (not mocked)
 conditions: every `Candidate` requires a real `source_adapter` +
 `source_record_id`, identity merging (`resolve/identity.py`) only ever fuses candidates via

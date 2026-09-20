@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🇹🇭 Thai Cite Engine
+# 🇹🇭 ThaiCite
 
 ### ประตูอนุมัติการอ้างอิงทางวิชาการ สำหรับ AI Agent ทุกตัว
 

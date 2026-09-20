@@ -1,4 +1,4 @@
-"""Core data model for Thai Cite Engine v0.1.
+"""Core data model for ThaiCite v0.1.
 
 Central invariant: AI NEVER BECOMES THE SOURCE. A `Candidate` cannot exist
 without a `source_adapter` and a `source_record_id` pointing at a real

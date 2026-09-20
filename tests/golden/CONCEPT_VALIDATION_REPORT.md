@@ -1,6 +1,6 @@
-# Thai Cite Engine — Concept Validation Report
+# ThaiCite — Concept Validation Report
 
-**Scope:** 100-scenario adversarial concept-validation run of the Thai Cite Engine
+**Scope:** 100-scenario adversarial concept-validation run of the ThaiCite
 prototype. This prototype covers the OpenAlex adapter plus the core
 identity-resolution / conflict / verification firewall logic only — it does not
 cover the full planned adapter set (Crossref, Google Scholar, Thai journal
